@@ -1,30 +1,43 @@
 import * as React from "react";
 import { createRoot } from "react-dom/client";
 import "./taskpane.css";
+import {
+  analyzeDocumentPagination,
+  ParagraphPageResult,
+} from "./word";
+
+const formatPageLabel = (pages: number[]): string => {
+  if (pages.length === 0) {
+    return "Page unavailable";
+  }
+
+  if (pages.length === 1) {
+    return `Page ${pages[0]}`;
+  }
+
+  return `Pages ${pages.join("–")}`;
+};
 
 const App = (): React.ReactElement => {
   const [status, setStatus] = React.useState("Ready");
-  const [paragraphs, setParagraphs] = React.useState<string[]>([]);
+  const [pageCount, setPageCount] = React.useState<number | null>(null);
+  const [paragraphs, setParagraphs] = React.useState<ParagraphPageResult[]>([]);
 
   const checkDocument = async (): Promise<void> => {
     setStatus("Checking document...");
+    setPageCount(null);
+    setParagraphs([]);
 
     try {
-      await Word.run(async (context) => {
-        const documentParagraphs = context.document.body.paragraphs;
+      const result = await analyzeDocumentPagination();
 
-        documentParagraphs.load("items/text");
-        await context.sync();
+      setPageCount(result.pageCount);
+      setParagraphs(result.paragraphs);
+      setStatus(
+        `Success! Found ${result.paragraphs.length} paragraphs across ${result.pageCount} pages.`
+      );
 
-        const paragraphTexts = documentParagraphs.items
-          .map((paragraph) => paragraph.text)
-          .filter((text) => text.trim() !== "");
-
-        setParagraphs(paragraphTexts);
-        setStatus(`Success! Found ${paragraphTexts.length} paragraphs.`);
-
-        console.log("Paragraphs:", paragraphTexts);
-      });
+      console.log("Document pagination:", result);
     } catch (error) {
       console.error("Word error:", error);
 
@@ -49,17 +62,30 @@ const App = (): React.ReactElement => {
         <strong>Status:</strong> {status}
       </p>
 
+      {pageCount !== null && (
+        <p className="page-summary">
+          <strong>Total pages:</strong> {pageCount}
+        </p>
+      )}
+
       {paragraphs.length > 0 && (
         <section>
-          <h2>Document paragraphs</h2>
+          <h2>Paragraph pages</h2>
 
           <ol>
             {paragraphs.map((paragraph, index) => (
               <li key={index}>
-  <strong>Paragraph {index + 1}</strong>
-  <br />
-  {paragraph}
-</li>
+                <div className="paragraph-heading">
+                  <strong>Paragraph {index + 1}</strong>
+                  <span>
+                    {formatPageLabel(paragraph.pages)}
+                    {paragraph.pages.length > 1 && (
+                      <span className="continuation"> — Continuation detected</span>
+                    )}
+                  </span>
+                </div>
+                <div className="paragraph-text">{paragraph.text}</div>
+              </li>
             ))}
           </ol>
         </section>

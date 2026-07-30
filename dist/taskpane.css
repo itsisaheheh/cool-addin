@@ -1,15 +1,16 @@
 body {
   margin: 0;
   font-family: Arial, sans-serif;
+  background: #f7f7f7;
 }
 
 .app {
-  padding: 24px;
+  padding: 20px;
 }
 
 .app h1 {
-  font-size: 24px;
-  margin-bottom: 12px;
+  font-size: 22px;
+  margin-bottom: 10px;
 }
 
 .app p {
@@ -20,6 +21,45 @@ body {
   padding: 10px 16px;
   font-size: 15px;
   cursor: pointer;
+  margin-bottom: 20px;
 }
+
+.page-summary {
+  background: #eef6fc;
+  border-left: 4px solid #0078d4;
+  padding: 10px 12px;
+}
+
+ol {
+  padding-left: 20px;
+}
+
+li {
+  background: white;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  padding: 10px;
+  margin-bottom: 12px;
+  white-space: normal;
+  word-break: break-word;
+}
+
+.paragraph-heading {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 6px 16px;
+  margin-bottom: 8px;
+}
+
+.paragraph-text {
+  color: #333;
+}
+
+.continuation {
+  color: #a4262c;
+  font-weight: 600;
+}
+
 
 /*# sourceMappingURL=taskpane.css.map*/
