@@ -41,7 +41,6 @@ export interface ContinuationInsertionResult {
   limitationMessage: string;
 }
 
-const CONTINUED_FROM_MARKER = "(CONT')";
 const CONTINUED_ON_MARKER = "(CONT'D)";
 const MARKER_SHAPE_PREFIX = "word-continuation-marker";
 const MARKER_WIDTH = 96;
@@ -128,6 +127,13 @@ export async function assessContinuationMarkers(
     const pagesByIndex = new Map(pages.items.map((page) => [page.index, page]));
     let markersInserted = 0;
 
+    for (const shape of shapes.items) {
+      if (shape.name.startsWith(`${MARKER_SHAPE_PREFIX}-from-`)) {
+        shape.delete();
+        existingShapeNames.delete(shape.name);
+      }
+    }
+
     const insertMarker = (
       pageIndex: number,
       marker: string,
@@ -182,8 +188,6 @@ export async function assessContinuationMarkers(
 
     for (const { pageIndexes } of continuedParagraphs) {
       for (let index = 0; index < pageIndexes.length - 1; index += 1) {
-        insertMarker(pageIndexes[index], CONTINUED_FROM_MARKER, "from", true);
-
         if (includeContinuedOnMarker) {
           insertMarker(pageIndexes[index + 1], CONTINUED_ON_MARKER, "on", false);
         }
@@ -196,7 +200,7 @@ export async function assessContinuationMarkers(
       boundariesFound,
       markersInserted,
       limitationMessage:
-        "Markers are floating text boxes anchored to their pages, so the original paragraph text and pagination are unchanged.",
+        "(CONT'D) markers are floating text boxes anchored to the following pages, so the original paragraph text and pagination are unchanged.",
     };
   });
 }
