@@ -24,6 +24,36 @@ body {
   margin-bottom: 20px;
 }
 
+.app button:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.button-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.app .undo-button {
+  width: 40px;
+  padding: 7px 0;
+  font-size: 22px;
+  line-height: 1;
+}
+
+.marker-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 16px 0 12px;
+}
+
+.marker-option input {
+  margin-top: 3px;
+}
+
 .page-summary {
   background: #eef6fc;
   border-left: 4px solid #0078d4;
