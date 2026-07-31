@@ -19,7 +19,9 @@ import {
 import {
   continuationText,
   continuationPageEligibility,
+  continuationPlacement,
   CONTINUATION_SUFFIX_PATTERN,
+  isOrphanOriginalHeading,
   parseNumericHeading,
   startsWithNumericHeading,
 } from "./continuation-format";
@@ -101,6 +103,7 @@ interface ParagraphDetails {
 
 interface ContinuationPage {
   pageIndex: number;
+  pageStartRange: Word.Range;
   anchorIndex: number;
   anchorText: string;
   anchor: Word.Paragraph;
@@ -460,6 +463,68 @@ async function assessContinuationMarkersPass(
     const originalParagraphs = paragraphDetails.filter(
       (details) => !details.isInsertedContinuation
     );
+    const orphanHeadingPairs = originalParagraphs.flatMap((details, index) => {
+      const nextParagraph = originalParagraphs[index + 1];
+      if (
+        !details.heading ||
+        !nextParagraph ||
+        !isOrphanOriginalHeading({
+          headingStartPage: details.startPage,
+          nextContentStartPage: nextParagraph.startPage,
+          nextParagraphIsNumberedHeading: nextParagraph.heading !== null,
+        })
+      ) {
+        return [];
+      }
+      return [{ heading: details, content: nextParagraph }];
+    });
+
+    if (prepareAffectedParagraphs && insertContinuationHeadings && orphanHeadingPairs.length > 0) {
+      const firstOrphan = orphanHeadingPairs[0];
+      const headingRange = firstOrphan.heading.paragraph.getRange(Word.RangeLocation.whole);
+      const headingOoxml = headingRange.getOoxml();
+      await context.sync();
+
+      // ClientResult values become available after context.sync(); they aren't loadable ClientObjects.
+      // eslint-disable-next-line office-addins/load-object-before-read
+      const originalHeadingOoxml = headingOoxml.value;
+      const updatedHeadingOoxml = addKeepNextToParagraphOoxml(originalHeadingOoxml);
+      const headingChanged = updatedHeadingOoxml !== originalHeadingOoxml;
+      if (headingChanged) {
+        headingRange.insertOoxml(updatedHeadingOoxml, Word.InsertLocation.replace);
+        await context.sync();
+      }
+
+      logContdDiagnostic({
+        pass: diagnosticPass,
+        phase: "orphan-heading",
+        totalParagraphs: paragraphs.items.length,
+        candidateSection: firstOrphan.heading.heading?.key ?? null,
+        candidatePage: firstOrphan.heading.startPage,
+        candidateParagraphIndex: firstOrphan.heading.documentIndex,
+        insertionTargetText: firstOrphan.content.text,
+        paginationChanged: headingChanged,
+        reason: headingChanged
+          ? "Applied keepNext to the orphan original heading; rescanning before any CONT'D insertion."
+          : "Orphan original heading already has keepNext; suppressing CONT'D on its first content page.",
+      });
+
+      if (headingChanged) {
+        return {
+          continuingSectionsFound: 0,
+          continuationPagesFound: 0,
+          headingsInserted: 0,
+          duplicatesSkipped: 0,
+          limitationMessage:
+            "Moved an orphan original heading with its first content paragraph and repaginated.",
+          requiresRepaginationPass: true,
+        };
+      }
+    }
+
+    const unresolvedOrphanContent = new Set(
+      orphanHeadingPairs.map(({ content }) => content.paragraph)
+    );
     const activeHierarchy: Array<HeadingDetails | undefined> = [];
     const hierarchyBeforeParagraph = new Map<Word.Paragraph, HeadingDetails[]>();
 
@@ -487,6 +552,21 @@ async function assessContinuationMarkersPass(
       );
       const firstOnPage = paragraphSpanningIntoPage ?? firstStartingOnPage;
       if (!firstOnPage) continue;
+      if (unresolvedOrphanContent.has(firstOnPage.paragraph)) {
+        logContdDiagnostic({
+          pass: diagnosticPass,
+          phase: "candidate",
+          totalParagraphs: paragraphs.items.length,
+          candidateSection:
+            hierarchyBeforeParagraph.get(firstOnPage.paragraph)?.slice(-1)[0]?.key ?? null,
+          candidatePage: page.index,
+          candidateParagraphIndex: firstOnPage.documentIndex,
+          insertionTargetText: firstOnPage.text,
+          paginationChanged: false,
+          reason: "Skipped CONT'D because this is the first content of an orphan original heading.",
+        });
+        continue;
+      }
 
       const startedEarlier = paragraphSpanningIntoPage === firstOnPage;
       const hierarchy = [...(hierarchyBeforeParagraph.get(firstOnPage.paragraph) ?? [])].filter(
@@ -505,6 +585,7 @@ async function assessContinuationMarkersPass(
 
       continuationPages.push({
         pageIndex: page.index,
+        pageStartRange: page.getRange(Word.RangeLocation.start),
         anchorIndex: firstOnPage.documentIndex,
         anchorText: firstOnPage.text,
         anchor: firstOnPage.paragraph,
@@ -602,22 +683,11 @@ async function assessContinuationMarkersPass(
         }
         if (!insertContinuationHeadings) continue;
 
-        if (continuationPage.startsInsideParagraph) {
-          logContdDiagnostic({
-            pass: diagnosticPass,
-            phase: "insert",
-            totalParagraphs: paragraphs.items.length,
-            candidateSection: heading.key,
-            candidatePage: continuationPage.pageIndex,
-            candidateParagraphIndex: continuationPage.anchorIndex,
-            insertionTargetText: continuationPage.anchorText,
-            paginationChanged: false,
-            reason: "Skipped because the paragraph still spans the page after preparation.",
-          });
-          continue;
-        }
-
-        const inserted = continuationPage.anchor.insertParagraph(text, Word.InsertLocation.before);
+        const placement = continuationPlacement(continuationPage.startsInsideParagraph, false);
+        const inserted =
+          placement === "at-rendered-page-start"
+            ? continuationPage.pageStartRange.insertParagraph(text, Word.InsertLocation.before)
+            : continuationPage.anchor.insertParagraph(text, Word.InsertLocation.before);
         inserted.style = heading.paragraph.style;
         inserted.alignment = heading.paragraph.alignment;
         inserted.firstLineIndent = heading.paragraph.firstLineIndent;
@@ -638,6 +708,20 @@ async function assessContinuationMarkersPass(
         insertedContinuationTags.add(tag);
         continuationPage.existingTexts.add(normalizedText);
         headingsInserted += 1;
+        logContdDiagnostic({
+          pass: diagnosticPass,
+          phase: "insert-target",
+          totalParagraphs: paragraphs.items.length,
+          candidateSection: heading.key,
+          candidatePage: continuationPage.pageIndex,
+          candidateParagraphIndex: continuationPage.anchorIndex,
+          insertionTargetText: continuationPage.anchorText,
+          paginationChanged: false,
+          reason:
+            placement === "at-rendered-page-start"
+              ? "Paragraph still spans pages; inserting at the freshly loaded rendered page start."
+              : "Inserting before the first complete paragraph on the continuation page.",
+        });
         break;
       }
       if (headingsInserted > 0) break;

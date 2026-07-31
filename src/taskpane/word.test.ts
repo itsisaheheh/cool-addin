@@ -9,6 +9,7 @@ import {
   continuationPageEligibility,
   continuationPlacement,
   continuationText,
+  isOrphanOriginalHeading,
   MAX_CONTINUATION_PAGINATION_PASSES,
   parseNumericHeading,
 } from "./continuation-format";
@@ -161,6 +162,36 @@ describe("post-CONT'D pagination validation", () => {
     ).toBe("skip");
   });
 
+  test("recognizes an original heading orphaned from its first content paragraph", () => {
+    expect(
+      isOrphanOriginalHeading({
+        headingStartPage: 1,
+        nextContentStartPage: 2,
+        nextParagraphIsNumberedHeading: false,
+      })
+    ).toBe(true);
+  });
+
+  test("does not treat a heading followed by same-page content as orphaned", () => {
+    expect(
+      isOrphanOriginalHeading({
+        headingStartPage: 2,
+        nextContentStartPage: 2,
+        nextParagraphIsNumberedHeading: false,
+      })
+    ).toBe(false);
+  });
+
+  test("does not treat a heading followed only by a new numbered section as orphaned", () => {
+    expect(
+      isOrphanOriginalHeading({
+        headingStartPage: 1,
+        nextContentStartPage: 2,
+        nextParagraphIsNumberedHeading: true,
+      })
+    ).toBe(false);
+  });
+
   test("does not insert a CONT'D heading inside paragraph text", () => {
     const updated = addKeepLinesToAllParagraphs(bodyParagraph).ooxml;
     expect(updated).toContain("<w:t>Complete paragraph text remains in one paragraph.</w:t>");
@@ -176,8 +207,8 @@ describe("post-CONT'D pagination validation", () => {
     expect(parseNumericHeading("5.3 Financial Instruments")).toEqual({ key: "5.3", level: 2 });
   });
 
-  test("gracefully skips a paragraph that remains longer than a page", () => {
-    expect(continuationPlacement(true, false)).toBe("skip-overlong-paragraph");
+  test("uses the rendered page start when a paragraph still spans the continuation page", () => {
+    expect(continuationPlacement(true, false)).toBe("at-rendered-page-start");
   });
 
   test("preserves existing body paragraph formatting", () => {

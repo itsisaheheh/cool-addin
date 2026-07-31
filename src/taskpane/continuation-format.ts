@@ -25,14 +25,14 @@ export const startsWithNumericHeading = (text: string): boolean =>
 export const MAX_CONTINUATION_PAGINATION_PASSES = 2;
 
 export type ContinuationPlacement =
-  "prepare-and-repaginate" | "before-complete-paragraph" | "skip-overlong-paragraph";
+  "prepare-and-repaginate" | "before-complete-paragraph" | "at-rendered-page-start";
 
 export function continuationPlacement(
   startsInsideParagraph: boolean,
   preparationPass: boolean
 ): ContinuationPlacement {
   if (preparationPass) return "prepare-and-repaginate";
-  return startsInsideParagraph ? "skip-overlong-paragraph" : "before-complete-paragraph";
+  return startsInsideParagraph ? "at-rendered-page-start" : "before-complete-paragraph";
 }
 
 export type ContinuationPageEligibility = "prepare" | "insert" | "skip";
@@ -49,4 +49,17 @@ export function continuationPageEligibility(options: {
   }
   if (options.anchorSpansFromEarlierPage) return "prepare";
   return options.anchorStartPage === options.currentPage ? "insert" : "skip";
+}
+
+export function isOrphanOriginalHeading(options: {
+  headingStartPage: number | null;
+  nextContentStartPage: number | null;
+  nextParagraphIsNumberedHeading: boolean;
+}): boolean {
+  return (
+    options.headingStartPage !== null &&
+    options.nextContentStartPage !== null &&
+    !options.nextParagraphIsNumberedHeading &&
+    options.nextContentStartPage > options.headingStartPage
+  );
 }
