@@ -36,6 +36,7 @@ export interface SplitParagraphChainUpdate {
 export interface KeepPaginationSnapshot {
   paragraphs: PaginatedParagraph[];
   applyParagraph: (index: number, ooxml: string) => Promise<void>;
+  settlePagination: () => Promise<void>;
 }
 
 export interface KeepPaginationResult {
@@ -427,11 +428,12 @@ export async function validateKeepLinesPagination(
   totalParagraphCount: number,
   scan: () => Promise<KeepPaginationSnapshot>
 ): Promise<KeepPaginationResult> {
-  const maximumPasses = Math.max(1, totalParagraphCount * 2 + 1);
-  const unfixableIndices = new Set<number>();
-  const formattedIndices = new Set<number>();
+  const maximumPasses = Math.max(2, totalParagraphCount + 3);
   let paragraphsChecked = totalParagraphCount;
   let paginationPasses = 0;
+  let splitParagraphsFixed = 0;
+  let consecutiveCleanScans = 0;
+  let unfixableParagraphs = 0;
 
   while (paginationPasses < maximumPasses) {
     paginationPasses += 1;
@@ -439,26 +441,28 @@ export async function validateKeepLinesPagination(
     paragraphsChecked = snapshot.paragraphs.length;
 
     const splitIndex = snapshot.paragraphs.findIndex(
-      (paragraph, index) => paragraph.pageCount > 1 && !unfixableIndices.has(index)
+      (paragraph) => paragraph.pageCount > 1 && !hasKeepLines(paragraph.ooxml)
     );
-    if (splitIndex < 0) break;
-
-    const splitParagraph = snapshot.paragraphs[splitIndex];
-    if (hasKeepLines(splitParagraph.ooxml)) {
-      unfixableIndices.add(splitIndex);
+    if (splitIndex < 0) {
+      consecutiveCleanScans += 1;
+      unfixableParagraphs = snapshot.paragraphs.filter(
+        (paragraph) => paragraph.pageCount > 1 && hasKeepLines(paragraph.ooxml)
+      ).length;
+      if (consecutiveCleanScans >= 2) break;
+      await snapshot.settlePagination();
       continue;
     }
 
+    consecutiveCleanScans = 0;
+    const splitParagraph = snapshot.paragraphs[splitIndex];
     await snapshot.applyParagraph(splitIndex, addKeepLinesToParagraphOoxml(splitParagraph.ooxml));
-    formattedIndices.add(splitIndex);
+    splitParagraphsFixed += 1;
   }
 
   return {
     paragraphsChecked,
-    splitParagraphsFixed: Array.from(formattedIndices).filter(
-      (index) => !unfixableIndices.has(index)
-    ).length,
+    splitParagraphsFixed,
     paginationPasses,
-    unfixableParagraphs: unfixableIndices.size,
+    unfixableParagraphs,
   };
 }

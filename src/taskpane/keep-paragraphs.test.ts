@@ -129,6 +129,7 @@ describe("Keep Paragraphs Intact repeated pagination validation", () => {
           applications += 1;
           layoutIndex = Math.min(layoutIndex + 1, layouts.length - 1);
         },
+        settlePagination: async () => undefined,
       };
     });
     return { result, scans, applications };
@@ -146,12 +147,12 @@ describe("Keep Paragraphs Intact repeated pagination validation", () => {
 
   test("detects the newly split paragraph on the next pass", async () => {
     const { result } = await runReflow();
-    expect(result.paginationPasses).toBe(3);
+    expect(result.paginationPasses).toBe(4);
   });
 
   test("rescans the document after every repagination", async () => {
     const { scans, applications } = await runReflow();
-    expect(scans).toBe(applications + 1);
+    expect(scans).toBe(applications + 2);
   });
 
   test("does not reuse page-position data from an earlier layout", async () => {
@@ -166,9 +167,10 @@ describe("Keep Paragraphs Intact repeated pagination validation", () => {
         applyParagraph: async () => {
           layoutIndex += 1;
         },
+        settlePagination: async () => undefined,
       };
     });
-    expect(observedSecondParagraphPages).toEqual([1, 2, 1]);
+    expect(observedSecondParagraphPages).toEqual([1, 2, 1, 1]);
   });
 
   test("stops when a complete scan finds no fixable split paragraph", async () => {
@@ -178,8 +180,9 @@ describe("Keep Paragraphs Intact repeated pagination validation", () => {
       applyParagraph: async () => {
         applications += 1;
       },
+      settlePagination: async () => undefined,
     }));
-    expect(result.paginationPasses).toBe(1);
+    expect(result.paginationPasses).toBe(2);
     expect(applications).toBe(0);
   });
 
@@ -187,9 +190,37 @@ describe("Keep Paragraphs Intact repeated pagination validation", () => {
     const result = await validateKeepLinesPagination(1, async () => ({
       paragraphs: [item("Overlong paragraph", 2, "<w:pPr><w:keepLines/></w:pPr>")],
       applyParagraph: async () => undefined,
+      settlePagination: async () => undefined,
     }));
     expect(result.unfixableParagraphs).toBe(1);
     expect(result.splitParagraphsFixed).toBe(0);
     expect(result.paginationPasses).toBeLessThanOrEqual(3);
+  });
+
+  test("eventually fixes multiple downstream paragraphs introduced by reflow", async () => {
+    const layouts: PaginatedParagraph[][] = [
+      [item("A", 2), item("B"), item("C")],
+      [item("A", 1, "<w:pPr><w:keepLines/></w:pPr>"), item("B", 2), item("C")],
+      [
+        item("A", 1, "<w:pPr><w:keepLines/></w:pPr>"),
+        item("B", 1, "<w:pPr><w:keepLines/></w:pPr>"),
+        item("C", 2),
+      ],
+      [
+        item("A", 1, "<w:pPr><w:keepLines/></w:pPr>"),
+        item("B", 1, "<w:pPr><w:keepLines/></w:pPr>"),
+        item("C", 1, "<w:pPr><w:keepLines/></w:pPr>"),
+      ],
+    ];
+    let layoutIndex = 0;
+    const result = await validateKeepLinesPagination(3, async () => ({
+      paragraphs: layouts[layoutIndex].map((paragraph) => ({ ...paragraph })),
+      applyParagraph: async () => {
+        layoutIndex += 1;
+      },
+      settlePagination: async () => undefined,
+    }));
+    expect(result.splitParagraphsFixed).toBe(3);
+    expect(result.paginationPasses).toBe(5);
   });
 });

@@ -209,6 +209,11 @@ export async function keepAllParagraphsOnOnePage(): Promise<KeepParagraphsIntact
           ranges[index].insertOoxml(ooxml, Word.InsertLocation.replace);
           await context.sync();
         },
+        settlePagination: async () => {
+          const renderedPages = context.document.activeWindow.activePane.pages;
+          renderedPages.load("items/index");
+          await context.sync();
+        },
       };
     });
 
