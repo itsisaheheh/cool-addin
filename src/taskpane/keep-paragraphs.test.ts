@@ -100,10 +100,16 @@ describe("Keep Paragraphs Intact keepLines-only behavior", () => {
 });
 
 describe("Keep Paragraphs Intact repeated pagination validation", () => {
-  const item = (text: string, pageCount = 1, properties = ""): PaginatedParagraph => ({
+  const item = (
+    text: string,
+    pageCount = 1,
+    properties = "",
+    pages = pageCount > 1 ? [1, 2] : [1]
+  ): PaginatedParagraph => ({
     text,
     pageCount,
     ooxml: `<w:p>${properties}<w:r><w:t>${text}</w:t></w:r></w:p>`,
+    pages,
   });
 
   const layoutsAfterReflow = (): PaginatedParagraph[][] => [
@@ -125,7 +131,7 @@ describe("Keep Paragraphs Intact repeated pagination validation", () => {
       scans += 1;
       return {
         paragraphs: snapshot,
-        applyParagraph: async () => {
+        applyParagraphs: async () => {
           applications += 1;
           layoutIndex = Math.min(layoutIndex + 1, layouts.length - 1);
         },
@@ -164,7 +170,7 @@ describe("Keep Paragraphs Intact repeated pagination validation", () => {
       observedSecondParagraphPages.push(snapshot[1].pageCount);
       return {
         paragraphs: snapshot,
-        applyParagraph: async () => {
+        applyParagraphs: async () => {
           layoutIndex += 1;
         },
         settlePagination: async () => undefined,
@@ -177,7 +183,7 @@ describe("Keep Paragraphs Intact repeated pagination validation", () => {
     let applications = 0;
     const result = await validateKeepLinesPagination(2, async () => ({
       paragraphs: [item("Complete A"), item("Complete B")],
-      applyParagraph: async () => {
+      applyParagraphs: async () => {
         applications += 1;
       },
       settlePagination: async () => undefined,
@@ -189,7 +195,7 @@ describe("Keep Paragraphs Intact repeated pagination validation", () => {
   test("skips and reports a paragraph that remains split with keepLines", async () => {
     const result = await validateKeepLinesPagination(1, async () => ({
       paragraphs: [item("Overlong paragraph", 2, "<w:pPr><w:keepLines/></w:pPr>")],
-      applyParagraph: async () => undefined,
+      applyParagraphs: async () => undefined,
       settlePagination: async () => undefined,
     }));
     expect(result.unfixableParagraphs).toBe(1);
@@ -215,12 +221,81 @@ describe("Keep Paragraphs Intact repeated pagination validation", () => {
     let layoutIndex = 0;
     const result = await validateKeepLinesPagination(3, async () => ({
       paragraphs: layouts[layoutIndex].map((paragraph) => ({ ...paragraph })),
-      applyParagraph: async () => {
+      applyParagraphs: async () => {
         layoutIndex += 1;
       },
       settlePagination: async () => undefined,
     }));
     expect(result.splitParagraphsFixed).toBe(3);
     expect(result.paginationPasses).toBe(5);
+  });
+
+  test.each([
+    "5.8 Revenue Recognition and Measurement",
+    "5.4 Tax assets and liabilities",
+    "(a) Initial Recognition and Measurement",
+    "(f) Recognition of Gains and Losses",
+    "DIRECTORS’ BENEFITS",
+  ])("fixes orphan heading %s when its complete body starts on the next page", async (heading) => {
+    const firstLayout = [item(heading, 1, "", [1]), item("Complete body paragraph.", 1, "", [2])];
+    const stableLayout = [
+      item(heading, 1, "<w:pPr><w:keepNext/></w:pPr>", [2]),
+      item("Complete body paragraph.", 1, "", [2]),
+    ];
+    let layout = firstLayout;
+    let appliedUpdates: Array<{ index: number; ooxml: string }> = [];
+
+    const result = await validateKeepLinesPagination(2, async () => ({
+      paragraphs: layout.map((paragraph) => ({ ...paragraph })),
+      applyParagraphs: async (updates) => {
+        appliedUpdates = updates;
+        layout = stableLayout;
+      },
+      settlePagination: async () => undefined,
+    }));
+
+    expect(appliedUpdates.find(({ index }) => index === 0)?.ooxml).toContain("<w:keepNext/>");
+    expect(appliedUpdates.find(({ index }) => index === 1)).toBeUndefined();
+    expect(result.orphanHeadingsFixed).toBe(1);
+    expect(result.splitParagraphsFixed).toBe(0);
+  });
+
+  test("ignores blank paragraphs when finding the immediate heading", async () => {
+    const firstLayout = [
+      item("5.8 Revenue Recognition and Measurement", 1, "", [1]),
+      item(""),
+      item("Complete body paragraph.", 1, "", [2]),
+    ];
+    let appliedIndices: number[] = [];
+    let layout = firstLayout;
+    await validateKeepLinesPagination(3, async () => ({
+      paragraphs: layout,
+      applyParagraphs: async (updates) => {
+        appliedIndices = updates.map(({ index }) => index).sort();
+        layout = [
+          item("5.8 Revenue Recognition and Measurement", 1, "<w:pPr><w:keepNext/></w:pPr>", [2]),
+          item(""),
+          item("Complete body paragraph.", 1, "", [2]),
+        ];
+      },
+      settlePagination: async () => undefined,
+    }));
+    expect(appliedIndices).toEqual([0]);
+  });
+
+  test("leaves a heading and body already on the same page unchanged", async () => {
+    let applications = 0;
+    const result = await validateKeepLinesPagination(2, async () => ({
+      paragraphs: [
+        item("5.8 Revenue Recognition and Measurement", 1, "", [2]),
+        item("Complete body paragraph.", 1, "", [2]),
+      ],
+      applyParagraphs: async () => {
+        applications += 1;
+      },
+      settlePagination: async () => undefined,
+    }));
+    expect(applications).toBe(0);
+    expect(result.orphanHeadingsFixed).toBe(0);
   });
 });

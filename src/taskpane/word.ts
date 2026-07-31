@@ -58,6 +58,7 @@ export interface DocumentPaginationResult {
 
 export interface KeepParagraphsIntactResult extends DocumentKeepLinesResult {
   splitParagraphsFixed: number;
+  orphanHeadingsFixed: number;
   paginationPasses: number;
   unfixableParagraphs: number;
 }
@@ -204,9 +205,12 @@ export async function keepAllParagraphsOnOnePage(): Promise<KeepParagraphsIntact
           text: paragraph.text,
           ooxml: paragraphOoxml[index].value,
           pageCount: pageCollections[index].items.length,
+          pages: pageCollections[index].items.map((page) => page.index),
         })),
-        applyParagraph: async (index, ooxml) => {
-          ranges[index].insertOoxml(ooxml, Word.InsertLocation.replace);
+        applyParagraphs: async (updates) => {
+          for (const update of [...updates].sort((left, right) => right.index - left.index)) {
+            ranges[update.index].insertOoxml(update.ooxml, Word.InsertLocation.replace);
+          }
           await context.sync();
         },
         settlePagination: async () => {
@@ -222,6 +226,7 @@ export async function keepAllParagraphsOnOnePage(): Promise<KeepParagraphsIntact
       paragraphsChanged: validation.splitParagraphsFixed,
       paragraphsAlreadyFormatted: validation.unfixableParagraphs,
       splitParagraphsFixed: validation.splitParagraphsFixed,
+      orphanHeadingsFixed: validation.orphanHeadingsFixed,
       paginationPasses: validation.paginationPasses,
       unfixableParagraphs: validation.unfixableParagraphs,
     };

@@ -23,6 +23,7 @@ export interface PaginatedParagraph {
   text: string;
   ooxml: string;
   pageCount: number;
+  pages?: number[];
 }
 
 export interface SplitParagraphChainUpdate {
@@ -35,13 +36,14 @@ export interface SplitParagraphChainUpdate {
 
 export interface KeepPaginationSnapshot {
   paragraphs: PaginatedParagraph[];
-  applyParagraph: (index: number, ooxml: string) => Promise<void>;
+  applyParagraphs: (updates: Array<{ index: number; ooxml: string }>) => Promise<void>;
   settlePagination: () => Promise<void>;
 }
 
 export interface KeepPaginationResult {
   paragraphsChecked: number;
   splitParagraphsFixed: number;
+  orphanHeadingsFixed: number;
   paginationPasses: number;
   unfixableParagraphs: number;
 }
@@ -362,6 +364,24 @@ export const isNonNumberedReportHeading = (paragraph: PaginatedParagraph): boole
   return isUppercase || /^(?:heading|title|subtitle)/i.test(style);
 };
 
+export const isImmediateTopicHeading = (paragraph: PaginatedParagraph): boolean => {
+  const text = normalizedParagraphText(paragraph.text);
+  if (!text || text.length > 160) return false;
+
+  const isShortBoldHeading =
+    hasEnabledBold(paragraph.ooxml) &&
+    text.length <= 120 &&
+    text.split(/\s+/).length <= 16 &&
+    !/[.!?;:]$/.test(text);
+
+  return (
+    isNumberedNoteHeading(text) ||
+    isLetteredSubsectionHeading(text) ||
+    isNonNumberedReportHeading(paragraph) ||
+    isShortBoldHeading
+  );
+};
+
 const isAnyHeading = (paragraph: PaginatedParagraph): boolean =>
   isNumberedNoteHeading(paragraph.text) ||
   isLetteredSubsectionHeading(paragraph.text) ||
@@ -432,6 +452,7 @@ export async function validateKeepLinesPagination(
   let paragraphsChecked = totalParagraphCount;
   let paginationPasses = 0;
   let splitParagraphsFixed = 0;
+  let orphanHeadingsFixed = 0;
   let consecutiveCleanScans = 0;
   let unfixableParagraphs = 0;
 
@@ -440,10 +461,39 @@ export async function validateKeepLinesPagination(
     const snapshot = await scan();
     paragraphsChecked = snapshot.paragraphs.length;
 
-    const splitIndex = snapshot.paragraphs.findIndex(
-      (paragraph) => paragraph.pageCount > 1 && !hasKeepLines(paragraph.ooxml)
-    );
-    if (splitIndex < 0) {
+    let issue: { kind: "split"; index: number } | { kind: "orphan"; index: number } | null = null;
+
+    for (let index = 0; index < snapshot.paragraphs.length; index += 1) {
+      const paragraph = snapshot.paragraphs[index];
+
+      if (isImmediateTopicHeading(paragraph) && !hasKeepNext(paragraph.ooxml)) {
+        const nextIndex = snapshot.paragraphs.findIndex(
+          (candidate, candidateIndex) =>
+            candidateIndex > index && normalizedParagraphText(candidate.text) !== ""
+        );
+        const headingPage = paragraph.pages?.[0];
+        const nextPage = nextIndex >= 0 ? snapshot.paragraphs[nextIndex].pages?.[0] : undefined;
+        if (
+          typeof headingPage === "number" &&
+          typeof nextPage === "number" &&
+          headingPage !== nextPage
+        ) {
+          issue = { kind: "orphan", index };
+          break;
+        }
+      }
+
+      if (
+        paragraph.pageCount > 1 &&
+        !hasKeepLines(paragraph.ooxml) &&
+        !isImmediateTopicHeading(paragraph)
+      ) {
+        issue = { kind: "split", index };
+        break;
+      }
+    }
+
+    if (issue === null) {
       consecutiveCleanScans += 1;
       unfixableParagraphs = snapshot.paragraphs.filter(
         (paragraph) => paragraph.pageCount > 1 && hasKeepLines(paragraph.ooxml)
@@ -454,14 +504,30 @@ export async function validateKeepLinesPagination(
     }
 
     consecutiveCleanScans = 0;
-    const splitParagraph = snapshot.paragraphs[splitIndex];
-    await snapshot.applyParagraph(splitIndex, addKeepLinesToParagraphOoxml(splitParagraph.ooxml));
+    if (issue.kind === "orphan") {
+      await snapshot.applyParagraphs([
+        {
+          index: issue.index,
+          ooxml: addKeepNextToParagraphOoxml(snapshot.paragraphs[issue.index].ooxml),
+        },
+      ]);
+      orphanHeadingsFixed += 1;
+      continue;
+    }
+
+    await snapshot.applyParagraphs([
+      {
+        index: issue.index,
+        ooxml: addKeepLinesToParagraphOoxml(snapshot.paragraphs[issue.index].ooxml),
+      },
+    ]);
     splitParagraphsFixed += 1;
   }
 
   return {
     paragraphsChecked,
     splitParagraphsFixed,
+    orphanHeadingsFixed,
     paginationPasses,
     unfixableParagraphs,
   };

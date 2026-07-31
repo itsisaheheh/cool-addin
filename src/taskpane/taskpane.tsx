@@ -86,7 +86,7 @@ const App = (): React.ReactElement => {
     try {
       const result = await keepAllParagraphsOnOnePage();
       setStatus(
-        `Keep Paragraphs Intact completed. ${result.paragraphsFound.toLocaleString()} paragraphs checked. ${result.splitParagraphsFixed} split paragraphs fixed. ${result.paginationPasses} pagination passes completed. ${result.unfixableParagraphs} paragraphs could not be kept intact because they exceeded one page. No unfinished fixable paragraphs remain across page boundaries.`
+        `Keep Paragraphs Intact completed. ${result.paragraphsFound.toLocaleString()} paragraphs checked. Split paragraphs fixed: ${result.splitParagraphsFixed}. Orphan headings fixed: ${result.orphanHeadingsFixed}. ${result.paginationPasses} pagination passes completed. ${result.unfixableParagraphs} paragraphs could not be kept intact because they exceeded one page. No unfinished fixable paragraphs remain across page boundaries.`
       );
     } catch (error) {
       console.error("Word error:", error);
