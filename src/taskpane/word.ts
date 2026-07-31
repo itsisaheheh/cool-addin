@@ -11,10 +11,10 @@ import {
   disableMoveToNextPage,
   DocumentKeepLinesResult,
   enableKeepTogether,
-  formatSplitParagraphChains,
   MoveParagraphsResult,
   removeKeepLinesFromAllParagraphs,
   RemoveMoveResult,
+  validateKeepLinesPagination,
 } from "./paragraph-format";
 import {
   continuationText,
@@ -58,7 +58,8 @@ export interface DocumentPaginationResult {
 
 export interface KeepParagraphsIntactResult extends DocumentKeepLinesResult {
   splitParagraphsFixed: number;
-  headingsKept: number;
+  paginationPasses: number;
+  unfixableParagraphs: number;
 }
 
 export interface ContinuationInsertionResult {
@@ -180,40 +181,44 @@ export async function keepAllParagraphsOnOnePage(): Promise<KeepParagraphsIntact
     await context.sync();
 
     const totalParagraphCount = initialParagraphs.items.length;
-    const paragraphs = context.document.body.paragraphs;
-    paragraphs.load("items/text");
-    await context.sync();
+    const validation = await validateKeepLinesPagination(totalParagraphCount, async () => {
+      // Every pass creates new ranges and reloads page membership after the
+      // preceding context.sync() has allowed Word to repaginate.
+      const paragraphs = context.document.body.paragraphs;
+      paragraphs.load("items/text");
+      await context.sync();
 
-    const ranges = paragraphs.items.map((paragraph) =>
-      paragraph.getRange(Word.RangeLocation.whole)
-    );
-    const pageCollections = ranges.map((range) => {
-      const pages = range.pages;
-      pages.load("items/index");
-      return pages;
+      const ranges = paragraphs.items.map((paragraph) =>
+        paragraph.getRange(Word.RangeLocation.whole)
+      );
+      const pageCollections = ranges.map((range) => {
+        const pages = range.pages;
+        pages.load("items/index");
+        return pages;
+      });
+      const paragraphOoxml = ranges.map((range) => range.getOoxml());
+      await context.sync();
+
+      return {
+        paragraphs: paragraphs.items.map((paragraph, index) => ({
+          text: paragraph.text,
+          ooxml: paragraphOoxml[index].value,
+          pageCount: pageCollections[index].items.length,
+        })),
+        applyParagraph: async (index, ooxml) => {
+          ranges[index].insertOoxml(ooxml, Word.InsertLocation.replace);
+          await context.sync();
+        },
+      };
     });
-    const paragraphOoxml = ranges.map((range) => range.getOoxml());
-    await context.sync();
-
-    const update = formatSplitParagraphChains(
-      paragraphs.items.map((paragraph, index) => ({
-        text: paragraph.text,
-        ooxml: paragraphOoxml[index].value,
-        pageCount: pageCollections[index].items.length,
-      }))
-    );
-
-    for (const index of [...update.changedIndices].sort((left, right) => right - left)) {
-      ranges[index].insertOoxml(update.paragraphs[index], Word.InsertLocation.replace);
-    }
-    if (update.changedIndices.length > 0) await context.sync();
 
     return {
-      paragraphsFound: totalParagraphCount,
-      paragraphsChanged: update.result.paragraphsChanged,
-      paragraphsAlreadyFormatted: update.result.paragraphsAlreadyFormatted,
-      splitParagraphsFixed: update.bodyIndices.length,
-      headingsKept: update.headingIndices.length,
+      paragraphsFound: validation.paragraphsChecked,
+      paragraphsChanged: validation.splitParagraphsFixed,
+      paragraphsAlreadyFormatted: validation.unfixableParagraphs,
+      splitParagraphsFixed: validation.splitParagraphsFixed,
+      paginationPasses: validation.paginationPasses,
+      unfixableParagraphs: validation.unfixableParagraphs,
     };
   });
 }

@@ -33,6 +33,18 @@ export interface SplitParagraphChainUpdate {
   result: DocumentKeepLinesResult;
 }
 
+export interface KeepPaginationSnapshot {
+  paragraphs: PaginatedParagraph[];
+  applyParagraph: (index: number, ooxml: string) => Promise<void>;
+}
+
+export interface KeepPaginationResult {
+  paragraphsChecked: number;
+  splitParagraphsFixed: number;
+  paginationPasses: number;
+  unfixableParagraphs: number;
+}
+
 interface KeepTogetherTarget {
   ooxml: string;
   pageCount: number;
@@ -220,6 +232,48 @@ export function addKeepLinesToAllParagraphs(ooxml: string): DocumentKeepLinesUpd
   };
 }
 
+export function addKeepLinesOnlyToAllParagraphs(ooxml: string): DocumentKeepLinesUpdate {
+  let paragraphsFound = 0;
+  let paragraphsChanged = 0;
+  let paragraphsAlreadyFormatted = 0;
+
+  const updatedOoxml = ooxml.replace(
+    PARAGRAPH_WITH_PROPERTIES_PATTERN,
+    (_match, paragraphStart: string, whitespace: string, paragraphProperties?: string) => {
+      paragraphsFound += 1;
+
+      if (paragraphProperties && hasKeepLines(paragraphProperties)) {
+        paragraphsAlreadyFormatted += 1;
+        return `${paragraphStart}${whitespace}${paragraphProperties}`;
+      }
+
+      paragraphsChanged += 1;
+      if (!paragraphProperties) {
+        return `${paragraphStart}${whitespace}<w:pPr><w:keepLines/></w:pPr>`;
+      }
+      if (/\/>$/.test(paragraphProperties)) {
+        return `${paragraphStart}${whitespace}${paragraphProperties.replace(
+          /\/>$/,
+          "><w:keepLines/></w:pPr>"
+        )}`;
+      }
+      return `${paragraphStart}${whitespace}${paragraphProperties.replace(
+        /<\/w:pPr>$/i,
+        "<w:keepLines/></w:pPr>"
+      )}`;
+    }
+  );
+
+  return {
+    ooxml: updatedOoxml,
+    result: {
+      paragraphsFound,
+      paragraphsChanged,
+      paragraphsAlreadyFormatted,
+    },
+  };
+}
+
 export function removeKeepLinesFromAllParagraphs(ooxml: string): DocumentKeepLinesUpdate {
   let paragraphsFound = 0;
   let paragraphsChanged = 0;
@@ -278,6 +332,9 @@ const addKeepLinesToParagraphOoxml = (ooxml: string): string => {
   }
   return addParagraphProperties(ooxml, "<w:keepLines/>");
 };
+
+export const addKeepLinesToParagraphOnly = (ooxml: string): string =>
+  addKeepLinesToParagraphOoxml(ooxml);
 
 const NUMBERED_NOTE_HEADING_PATTERN = /^\d+(?:(?:\.\d+)+|\.)\s+\S.+$/;
 const LETTERED_SUBSECTION_HEADING_PATTERN = /^\([a-z]\)\s+\S.+$/i;
@@ -363,5 +420,45 @@ export function formatSplitParagraphChains(
       paragraphsChanged: changedIndices.length,
       paragraphsAlreadyFormatted: applicableIndices.size - changedIndices.length,
     },
+  };
+}
+
+export async function validateKeepLinesPagination(
+  totalParagraphCount: number,
+  scan: () => Promise<KeepPaginationSnapshot>
+): Promise<KeepPaginationResult> {
+  const maximumPasses = Math.max(1, totalParagraphCount * 2 + 1);
+  const unfixableIndices = new Set<number>();
+  const formattedIndices = new Set<number>();
+  let paragraphsChecked = totalParagraphCount;
+  let paginationPasses = 0;
+
+  while (paginationPasses < maximumPasses) {
+    paginationPasses += 1;
+    const snapshot = await scan();
+    paragraphsChecked = snapshot.paragraphs.length;
+
+    const splitIndex = snapshot.paragraphs.findIndex(
+      (paragraph, index) => paragraph.pageCount > 1 && !unfixableIndices.has(index)
+    );
+    if (splitIndex < 0) break;
+
+    const splitParagraph = snapshot.paragraphs[splitIndex];
+    if (hasKeepLines(splitParagraph.ooxml)) {
+      unfixableIndices.add(splitIndex);
+      continue;
+    }
+
+    await snapshot.applyParagraph(splitIndex, addKeepLinesToParagraphOoxml(splitParagraph.ooxml));
+    formattedIndices.add(splitIndex);
+  }
+
+  return {
+    paragraphsChecked,
+    splitParagraphsFixed: Array.from(formattedIndices).filter(
+      (index) => !unfixableIndices.has(index)
+    ).length,
+    paginationPasses,
+    unfixableParagraphs: unfixableIndices.size,
   };
 }
