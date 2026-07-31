@@ -81,6 +81,25 @@ body {
   margin: 12px 0 0;
 }
 
+.check-results {
+  margin-top: 14px;
+}
+
+.check-results > p {
+  font-size: 13px;
+  margin: 0 0 8px;
+}
+
+.check-heading-list {
+  margin: 0;
+  padding-left: 22px;
+}
+
+.check-heading-list li {
+  font-size: 13px;
+  margin-bottom: 6px;
+}
+
 .app .undo-button {
   width: 40px;
   padding: 7px 0;

@@ -44,14 +44,7 @@ describe("independent feature actions", () => {
 
   test("Check Document does not call the CONT'D insertion function", async () => {
     mockedCheck.mockResolvedValue({
-      continuation: {
-        continuingSectionsFound: 0,
-        continuationPagesFound: 0,
-        headingsInserted: 0,
-        duplicatesSkipped: 0,
-        limitationMessage: "Report only.",
-      },
-      pagination: { pageCount: 1, paragraphs: [] },
+      numberedHeadings: [],
     });
 
     await runCheckDocumentOnly();
@@ -89,14 +82,12 @@ describe("independent feature actions", () => {
       unfixableParagraphs: 0,
     });
     mockedCheck.mockResolvedValue({
-      continuation: {
-        continuingSectionsFound: 1,
-        continuationPagesFound: 1,
-        headingsInserted: 0,
-        duplicatesSkipped: 0,
-        limitationMessage: "Report only.",
-      },
-      pagination: { pageCount: 2, paragraphs: [] },
+      numberedHeadings: [
+        {
+          key: "5.2",
+          title: "Property",
+        },
+      ],
     });
 
     const results = [await runKeepParagraphsIntactOnly(), await runCheckDocumentOnly()];

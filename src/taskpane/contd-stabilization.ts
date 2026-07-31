@@ -13,7 +13,7 @@ export interface ContdStabilizationResult extends ContdPassResult {
 
 export async function runContdInsertionUntilStable(
   maximumPasses: number,
-  runPass: () => Promise<ContdPassResult>
+  runPass: (passNumber: number) => Promise<ContdPassResult>
 ): Promise<ContdStabilizationResult> {
   const safeMaximum = Math.max(1, maximumPasses);
   let passesCompleted = 0;
@@ -25,7 +25,7 @@ export async function runContdInsertionUntilStable(
   let reachedSafetyLimit = true;
 
   while (passesCompleted < safeMaximum) {
-    const result = await runPass();
+    const result = await runPass(passesCompleted + 1);
     passesCompleted += 1;
     continuingSectionsFound = Math.max(continuingSectionsFound, result.continuingSectionsFound);
     continuationPagesFound = Math.max(continuationPagesFound, result.continuationPagesFound);

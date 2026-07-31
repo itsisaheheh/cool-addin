@@ -3,7 +3,7 @@
  * See LICENSE in the project root for license information.
  */
 
-/* global document, Office, Word */
+/* global console, document, Office, Word */
 
 import {
   addKeepNextToParagraphOoxml,
@@ -18,7 +18,7 @@ import {
 } from "./paragraph-format";
 import {
   continuationText,
-  continuationPlacement,
+  continuationPageEligibility,
   CONTINUATION_SUFFIX_PATTERN,
   parseNumericHeading,
   startsWithNumericHeading,
@@ -73,8 +73,12 @@ export interface ContinuationInsertionResult {
 }
 
 export interface DocumentCheckResult {
-  continuation: ContinuationInsertionResult;
-  pagination: DocumentPaginationResult;
+  numberedHeadings: NumberedHeadingCheckResult[];
+}
+
+export interface NumberedHeadingCheckResult {
+  key: string;
+  title: string;
 }
 
 interface HeadingDetails {
@@ -82,18 +86,23 @@ interface HeadingDetails {
   level: number;
   text: string;
   paragraph: Word.Paragraph;
+  startPage: number | null;
 }
 
 interface ParagraphDetails {
+  documentIndex: number;
   paragraph: Word.Paragraph;
   text: string;
   pages: number[];
+  startPage: number | null;
   heading: HeadingDetails | null;
   isInsertedContinuation: boolean;
 }
 
 interface ContinuationPage {
   pageIndex: number;
+  anchorIndex: number;
+  anchorText: string;
   anchor: Word.Paragraph;
   detectedHeadings: HeadingDetails[];
   headings: HeadingDetails[];
@@ -103,6 +112,10 @@ interface ContinuationPage {
 
 const CONTINUATION_TAG_PREFIX = "word-continuation-heading:";
 const LEGACY_MARKER_SHAPE_PREFIX = "word-continuation-marker";
+
+const logContdDiagnostic = (details: Record<string, unknown>): void => {
+  console.debug("[Add CONT'D Headings]", details);
+};
 
 export const PAGINATION_REQUIREMENT_MESSAGE =
   "Page detection requires WordApiDesktop 1.2, which is available in supported Word desktop clients.";
@@ -305,9 +318,35 @@ export async function analyzeDocumentPagination(): Promise<DocumentPaginationRes
 }
 
 export async function checkDocumentIssues(): Promise<DocumentCheckResult> {
-  const continuation = await assessContinuationMarkers(false);
-  const pagination = await analyzeDocumentPagination();
-  return { continuation, pagination };
+  const numberedHeadings = await Word.run(async (context) => {
+    const paragraphs = context.document.body.paragraphs;
+    paragraphs.load("items/text");
+    await context.sync();
+
+    paragraphs.items.forEach((paragraph) => {
+      paragraph.listItemOrNullObject.load("isNullObject,listString");
+    });
+    await context.sync();
+
+    return paragraphs.items.flatMap((paragraph) => {
+      const listItem = paragraph.listItemOrNullObject;
+      const listPrefix = listItem.isNullObject ? "" : listItem.listString.trim();
+      const numeric = parseNumericHeading(paragraph.text) ?? parseNumericHeading(`${listPrefix} `);
+      if (!numeric) return [];
+
+      const text =
+        listPrefix && !startsWithNumericHeading(paragraph.text)
+          ? `${listPrefix} ${paragraph.text.trim()}`
+          : paragraph.text.trim();
+      return [
+        {
+          key: numeric.key,
+          title: text.replace(/^\d+(?:\.\d+)*\.?\s*/, "").trim() || "Untitled section",
+        },
+      ];
+    });
+  });
+  return { numberedHeadings };
 }
 
 export async function addContdHeadings(): Promise<ContinuationInsertionResult> {
@@ -318,8 +357,8 @@ export async function addContdHeadings(): Promise<ContinuationInsertionResult> {
     return paragraphs.items.length;
   });
 
-  return runContdInsertionUntilStable(Math.max(2, paragraphCount + 2), async () =>
-    assessContinuationMarkers(true)
+  return runContdInsertionUntilStable(Math.max(2, paragraphCount + 2), async (passNumber) =>
+    assessContinuationMarkers(true, passNumber)
   );
 }
 
@@ -328,17 +367,23 @@ interface ContinuationPassResult extends ContinuationInsertionResult {
 }
 
 export async function assessContinuationMarkers(
-  insertContinuationHeadings: boolean
+  insertContinuationHeadings: boolean,
+  diagnosticPass = 1
 ): Promise<ContinuationInsertionResult> {
-  const preparation = await assessContinuationMarkersPass(insertContinuationHeadings, true);
+  const preparation = await assessContinuationMarkersPass(
+    insertContinuationHeadings,
+    true,
+    diagnosticPass
+  );
   if (!preparation.requiresRepaginationPass) return preparation;
 
-  return assessContinuationMarkersPass(insertContinuationHeadings, false);
+  return assessContinuationMarkersPass(insertContinuationHeadings, false, diagnosticPass);
 }
 
 async function assessContinuationMarkersPass(
   insertContinuationHeadings: boolean,
-  prepareAffectedParagraphs: boolean
+  prepareAffectedParagraphs: boolean,
+  diagnosticPass: number
 ): Promise<ContinuationPassResult> {
   if (!Office.context.requirements.isSetSupported("WordApiDesktop", "1.2")) {
     throw new Error(PAGINATION_REQUIREMENT_MESSAGE);
@@ -357,13 +402,21 @@ async function assessContinuationMarkersPass(
     pages.load("items/index");
     contentControls.load("items/tag");
     await context.sync();
+    const pageCountBefore = pages.items.length;
 
     const paragraphPageCollections = paragraphs.items.map((paragraph) => {
-      const paragraphPages = paragraph.getRange().pages;
+      // Exclude the paragraph mark: Word can render that mark on the following
+      // page even when all visible paragraph content remains on the current page.
+      const paragraphPages = paragraph.getRange(Word.RangeLocation.content).pages;
       paragraphPages.load("items/index");
       paragraph.font.load("name,size,bold,italic,color");
       paragraph.listItemOrNullObject.load("isNullObject,listString,level");
       return paragraphPages;
+    });
+    const paragraphStartPageCollections = paragraphs.items.map((paragraph) => {
+      const startPages = paragraph.getRange(Word.RangeLocation.start).pages;
+      startPages.load("items/index");
+      return startPages;
     });
     await context.sync();
 
@@ -383,12 +436,21 @@ async function assessContinuationMarkersPass(
         const numeric = parseNumericHeading(text) ?? parseNumericHeading(`${listPrefix} `);
         const fullHeadingText =
           numeric && listPrefix && !startsWithNumericHeading(text) ? `${listPrefix} ${text}` : text;
+        const startPage = paragraphStartPageCollections[index].items[0]?.index ?? null;
         return {
+          documentIndex: index,
           paragraph,
           text,
           pages: paragraphPageCollections[index].items.map((page) => page.index),
+          startPage,
           heading: numeric
-            ? { key: numeric.key, level: numeric.level, text: fullHeadingText, paragraph }
+            ? {
+                key: numeric.key,
+                level: numeric.level,
+                text: fullHeadingText,
+                paragraph,
+                startPage,
+              }
             : null,
           isInsertedContinuation: CONTINUATION_SUFFIX_PATTERN.test(text),
         };
@@ -414,18 +476,37 @@ async function assessContinuationMarkersPass(
       const paragraphsOnPage = originalParagraphs.filter((details) =>
         details.pages.includes(page.index)
       );
-      const firstOnPage = paragraphsOnPage[0];
+      const paragraphSpanningIntoPage = paragraphsOnPage.find(
+        (details) =>
+          details.startPage !== null &&
+          details.startPage < page.index &&
+          details.pages.includes(page.index)
+      );
+      const firstStartingOnPage = originalParagraphs.find(
+        (details) => details.startPage === page.index
+      );
+      const firstOnPage = paragraphSpanningIntoPage ?? firstStartingOnPage;
       if (!firstOnPage) continue;
 
-      const startedEarlier = firstOnPage.pages.some((pageIndex) => pageIndex < page.index);
-      if (!startedEarlier && firstOnPage.heading) continue;
-
-      const hierarchy = [...(hierarchyBeforeParagraph.get(firstOnPage.paragraph) ?? [])];
-      if (firstOnPage.heading && startedEarlier) updateHierarchy(hierarchy, firstOnPage.heading);
+      const startedEarlier = paragraphSpanningIntoPage === firstOnPage;
+      const hierarchy = [...(hierarchyBeforeParagraph.get(firstOnPage.paragraph) ?? [])].filter(
+        (heading) => heading.startPage !== null && heading.startPage < page.index
+      );
       if (hierarchy.length === 0) continue;
+      const activeHeading = hierarchy[hierarchy.length - 1];
+      const eligibility = continuationPageEligibility({
+        sectionStartPage: activeHeading.startPage ?? page.index,
+        currentPage: page.index,
+        anchorStartPage: firstOnPage.startPage,
+        anchorIsOriginalHeading: firstOnPage.heading !== null,
+        anchorSpansFromEarlierPage: startedEarlier,
+      });
+      if (eligibility === "skip") continue;
 
       continuationPages.push({
         pageIndex: page.index,
+        anchorIndex: firstOnPage.documentIndex,
+        anchorText: firstOnPage.text,
         anchor: firstOnPage.paragraph,
         detectedHeadings: hierarchy,
         headings: hierarchy.slice(-1),
@@ -434,7 +515,7 @@ async function assessContinuationMarkersPass(
             .filter((details) => details.pages.includes(page.index))
             .map((details) => normalizeHeadingText(details.text))
         ),
-        startsInsideParagraph: startedEarlier,
+        startsInsideParagraph: eligibility === "prepare",
       });
     }
 
@@ -443,24 +524,35 @@ async function assessContinuationMarkersPass(
     let duplicatesSkipped = 0;
 
     if (prepareAffectedParagraphs && insertContinuationHeadings) {
-      const affectedParagraphs = Array.from(new Set(continuationPages.map(({ anchor }) => anchor)));
-      const affectedRanges = affectedParagraphs.map((paragraph) =>
-        paragraph.getRange(Word.RangeLocation.whole)
-      );
-      const affectedOoxml = affectedRanges.map((range) => range.getOoxml());
-      await context.sync();
+      const firstCandidate = continuationPages[0];
+      if (firstCandidate) {
+        const affectedRange = firstCandidate.anchor.getRange(Word.RangeLocation.whole);
+        const affectedOoxml = affectedRange.getOoxml();
+        await context.sync();
 
-      let paragraphsFormatted = 0;
-      for (let index = affectedRanges.length - 1; index >= 0; index -= 1) {
-        const update = addKeepLinesToAllParagraphs(affectedOoxml[index].value);
+        // ClientResult values become available after context.sync(); they aren't loadable ClientObjects.
+        // eslint-disable-next-line office-addins/load-object-before-read
+        const update = addKeepLinesToAllParagraphs(affectedOoxml.value);
         if (update.result.paragraphsChanged > 0) {
-          affectedRanges[index].insertOoxml(update.ooxml, Word.InsertLocation.replace);
-          paragraphsFormatted += update.result.paragraphsChanged;
+          affectedRange.insertOoxml(update.ooxml, Word.InsertLocation.replace);
+          await context.sync();
         }
-      }
 
-      if (paragraphsFormatted > 0) await context.sync();
-      if (affectedRanges.length > 0) {
+        const candidateHeading = firstCandidate.headings[0];
+        logContdDiagnostic({
+          pass: diagnosticPass,
+          phase: "prepare",
+          totalParagraphs: paragraphs.items.length,
+          candidateSection: candidateHeading?.key ?? null,
+          candidatePage: firstCandidate.pageIndex,
+          candidateParagraphIndex: firstCandidate.anchorIndex,
+          insertionTargetText: firstCandidate.anchorText,
+          paginationChanged: update.result.paragraphsChanged > 0,
+          reason:
+            update.result.paragraphsChanged > 0
+              ? "Prepared the first candidate paragraph and discarded this pass's layout."
+              : "First candidate was already prepared; rescanning before insertion.",
+        });
         return {
           continuingSectionsFound: 0,
           continuationPagesFound: continuationPages.length,
@@ -472,12 +564,16 @@ async function assessContinuationMarkersPass(
       }
     }
 
-    const insertedHeadingParagraphs: Array<{ paragraph: Word.Paragraph; tag: string }> = [];
+    const insertedHeadingParagraphs: Array<{
+      paragraph: Word.Paragraph;
+      tag: string;
+      continuationPage: ContinuationPage;
+    }> = [];
     let paragraphsStillSplitAfterValidation = 0;
 
-    // Work from the last rendered page toward the first so inserting at a page
-    // boundary doesn't invalidate the ranges for later continuation pages.
-    for (const continuationPage of [...continuationPages].reverse()) {
+    // Insert at most one heading. Word repaginates after the sync below, and the
+    // stabilization loop then discards every candidate and rescans from scratch.
+    for (const continuationPage of continuationPages) {
       for (const heading of continuationPage.detectedHeadings) {
         continuingSectionKeys.add(heading.key);
       }
@@ -491,14 +587,33 @@ async function assessContinuationMarkersPass(
           insertedContinuationTags.has(tag)
         ) {
           duplicatesSkipped += 1;
+          logContdDiagnostic({
+            pass: diagnosticPass,
+            phase: "insert",
+            totalParagraphs: paragraphs.items.length,
+            candidateSection: heading.key,
+            candidatePage: continuationPage.pageIndex,
+            candidateParagraphIndex: continuationPage.anchorIndex,
+            insertionTargetText: continuationPage.anchorText,
+            paginationChanged: false,
+            reason: "Skipped because a matching CONT'D heading already exists.",
+          });
           continue;
         }
         if (!insertContinuationHeadings) continue;
 
-        if (
-          continuationPlacement(continuationPage.startsInsideParagraph, false) ===
-          "skip-overlong-paragraph"
-        ) {
+        if (continuationPage.startsInsideParagraph) {
+          logContdDiagnostic({
+            pass: diagnosticPass,
+            phase: "insert",
+            totalParagraphs: paragraphs.items.length,
+            candidateSection: heading.key,
+            candidatePage: continuationPage.pageIndex,
+            candidateParagraphIndex: continuationPage.anchorIndex,
+            insertionTargetText: continuationPage.anchorText,
+            paginationChanged: false,
+            reason: "Skipped because the paragraph still spans the page after preparation.",
+          });
           continue;
         }
 
@@ -519,11 +634,13 @@ async function assessContinuationMarkersPass(
           color: heading.paragraph.font.color,
         });
 
-        insertedHeadingParagraphs.push({ paragraph: inserted, tag });
+        insertedHeadingParagraphs.push({ paragraph: inserted, tag, continuationPage });
         insertedContinuationTags.add(tag);
         continuationPage.existingTexts.add(normalizedText);
         headingsInserted += 1;
+        break;
       }
+      if (headingsInserted > 0) break;
     }
 
     if (insertedHeadingParagraphs.length > 0) {
@@ -552,14 +669,26 @@ async function assessContinuationMarkersPass(
       // Required post-insertion pagination validation. This is deliberately one
       // bounded validation pass: keepLines moves paragraphs that can fit, while
       // paragraphs longer than a page remain split without causing a loop.
-      const affectedPages = continuationPages.map(({ anchor }) => {
-        const paragraphPages = anchor.getRange().pages;
+      const affectedPages = insertedHeadingParagraphs.map(({ continuationPage }) => {
+        const paragraphPages = continuationPage.anchor.getRange().pages;
         paragraphPages.load("items/index");
         return paragraphPages;
       });
       const repaginatedPages = context.document.activeWindow.activePane.pages;
       repaginatedPages.load("items/index");
       await context.sync();
+      const insertedCandidate = insertedHeadingParagraphs[0].continuationPage;
+      logContdDiagnostic({
+        pass: diagnosticPass,
+        phase: "insert",
+        totalParagraphs: paragraphs.items.length,
+        candidateSection: insertedCandidate.headings[0]?.key ?? null,
+        candidatePage: insertedCandidate.pageIndex,
+        candidateParagraphIndex: insertedCandidate.anchorIndex,
+        insertionTargetText: insertedCandidate.anchorText,
+        paginationChanged: repaginatedPages.items.length !== pageCountBefore,
+        reason: "Inserted one CONT'D heading; all saved candidates will now be discarded.",
+      });
       paragraphsStillSplitAfterValidation = affectedPages.filter(
         (paragraphPages) => paragraphPages.items.length > 1
       ).length;

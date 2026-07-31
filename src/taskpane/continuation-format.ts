@@ -34,3 +34,19 @@ export function continuationPlacement(
   if (preparationPass) return "prepare-and-repaginate";
   return startsInsideParagraph ? "skip-overlong-paragraph" : "before-complete-paragraph";
 }
+
+export type ContinuationPageEligibility = "prepare" | "insert" | "skip";
+
+export function continuationPageEligibility(options: {
+  sectionStartPage: number;
+  currentPage: number;
+  anchorStartPage: number | null;
+  anchorIsOriginalHeading: boolean;
+  anchorSpansFromEarlierPage: boolean;
+}): ContinuationPageEligibility {
+  if (options.sectionStartPage >= options.currentPage || options.anchorIsOriginalHeading) {
+    return "skip";
+  }
+  if (options.anchorSpansFromEarlierPage) return "prepare";
+  return options.anchorStartPage === options.currentPage ? "insert" : "skip";
+}

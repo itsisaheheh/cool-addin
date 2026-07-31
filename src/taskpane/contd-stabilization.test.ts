@@ -25,17 +25,18 @@ describe("Add CONT'D Headings full-document stabilization", () => {
     expect(result.reachedSafetyLimit).toBe(false);
   });
 
-  test("does not stop after the first successful insertion", async () => {
+  test("starts a fresh numbered pass after each single insertion", async () => {
     const runPass = jest
       .fn()
-      .mockResolvedValueOnce(passResult(2))
+      .mockResolvedValueOnce(passResult(1))
       .mockResolvedValueOnce(passResult(1))
       .mockResolvedValueOnce(passResult(0));
 
     const result = await runContdInsertionUntilStable(10, runPass);
 
     expect(result.passesCompleted).toBe(3);
-    expect(result.headingsInserted).toBe(3);
+    expect(result.headingsInserted).toBe(2);
+    expect(runPass.mock.calls).toEqual([[1], [2], [3]]);
   });
 
   test("stops after a complete pass inserts no missing headings", async () => {

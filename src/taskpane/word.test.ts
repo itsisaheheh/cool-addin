@@ -6,6 +6,7 @@ import {
   removeKeepLinesFromAllParagraphs,
 } from "./paragraph-format";
 import {
+  continuationPageEligibility,
   continuationPlacement,
   continuationText,
   MAX_CONTINUATION_PAGINATION_PASSES,
@@ -83,6 +84,17 @@ describe("continuation heading text", () => {
     expect(parseNumericHeading("1.1 Scope")).toEqual({ key: "1.1", level: 2 });
     expect(continuationText("1.1 Scope")).toBe("1.1 Scope (Cont'd)");
   });
+
+  test.each([
+    ["1", "1", 1],
+    ["1.1 Basis of Preparation", "1.1", 2],
+    ["7.2.1 Detailed Policy", "7.2.1", 3],
+    ["10 BORROWINGS", "10", 1],
+    ["20.3 Related Party Balances", "20.3", 2],
+    ["40.1 Other Information", "40.1", 2],
+  ])("recognizes generic numbered report heading %s", (text, key, level) => {
+    expect(parseNumericHeading(text as string)).toEqual({ key, level });
+  });
 });
 
 describe("post-CONT'D pagination validation", () => {
@@ -111,6 +123,42 @@ describe("post-CONT'D pagination validation", () => {
     const layout = `${heading}${addKeepLinesToAllParagraphs(bodyParagraph).ooxml}`;
     expect(layout.indexOf("(Cont'd)")).toBeLessThan(layout.indexOf("Complete paragraph text"));
     expect(heading).toContain("<w:keepNext/><w:keepLines/>");
+  });
+
+  test("inserts before the first continuation item that starts on the page", () => {
+    expect(
+      continuationPageEligibility({
+        sectionStartPage: 10,
+        currentPage: 11,
+        anchorStartPage: 11,
+        anchorIsOriginalHeading: false,
+        anchorSpansFromEarlierPage: false,
+      })
+    ).toBe("insert");
+  });
+
+  test("prepares a paragraph spanning into the continuation page before insertion", () => {
+    expect(
+      continuationPageEligibility({
+        sectionStartPage: 10,
+        currentPage: 11,
+        anchorStartPage: 10,
+        anchorIsOriginalHeading: false,
+        anchorSpansFromEarlierPage: true,
+      })
+    ).toBe("prepare");
+  });
+
+  test("does not add CONT'D beside an original section heading on the current page", () => {
+    expect(
+      continuationPageEligibility({
+        sectionStartPage: 11,
+        currentPage: 11,
+        anchorStartPage: 11,
+        anchorIsOriginalHeading: true,
+        anchorSpansFromEarlierPage: false,
+      })
+    ).toBe("skip");
   });
 
   test("does not insert a CONT'D heading inside paragraph text", () => {

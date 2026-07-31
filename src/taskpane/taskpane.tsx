@@ -2,7 +2,7 @@ import * as React from "react";
 import { createRoot } from "react-dom/client";
 import "./taskpane.css";
 import {
-  ParagraphPageResult,
+  NumberedHeadingCheckResult,
   removeContinuationMarkers,
   removeKeepAllParagraphsTogether,
 } from "./word";
@@ -11,12 +11,6 @@ import {
   runCheckDocumentOnly,
   runKeepParagraphsIntactOnly,
 } from "./feature-actions";
-
-const formatPageLabel = (pages: number[]): string => {
-  if (pages.length === 0) return "Page unavailable";
-  if (pages.length === 1) return `Page ${pages[0]}`;
-  return `Pages ${pages.join("–")}`;
-};
 
 const errorMessage = (error: unknown): string =>
   error instanceof Error ? error.message : JSON.stringify(error);
@@ -28,10 +22,9 @@ const App = (): React.ReactElement => {
     contdHeadings: false,
   });
   const [checkStatus, setCheckStatus] = React.useState("Ready to scan.");
+  const [checkResults, setCheckResults] = React.useState<NumberedHeadingCheckResult[]>([]);
   const [keepStatus, setKeepStatus] = React.useState("Ready.");
   const [contdStatus, setContdStatus] = React.useState("Ready.");
-  const [pageCount, setPageCount] = React.useState<number | null>(null);
-  const [paragraphs, setParagraphs] = React.useState<ParagraphPageResult[]>([]);
   const [isChecking, setIsChecking] = React.useState(false);
   const [isKeepingParagraphs, setIsKeepingParagraphs] = React.useState(false);
   const [isAddingContd, setIsAddingContd] = React.useState(false);
@@ -45,17 +38,15 @@ const App = (): React.ReactElement => {
   };
 
   const handleCheckDocument = async (): Promise<void> => {
-    setCheckStatus("Scanning and reporting document issues...");
+    setCheckStatus("Scanning for numbered headings...");
     setIsChecking(true);
-    setPageCount(null);
-    setParagraphs([]);
+    setCheckResults([]);
 
     try {
       const result = await runCheckDocumentOnly();
-      setPageCount(result.pagination.pageCount);
-      setParagraphs(result.pagination.paragraphs);
+      setCheckResults(result.numberedHeadings);
       setCheckStatus(
-        `Check completed. Found ${result.continuation.continuingSectionsFound} continuing sections across ${result.continuation.continuationPagesFound} continuation pages and ${result.continuation.duplicatesSkipped} existing duplicate continuation headings. No document changes were made.`
+        `Detected numbered headings: ${result.numberedHeadings.length}. No document changes were made.`
       );
     } catch (error) {
       console.error("Check Document error:", error);
@@ -157,6 +148,56 @@ const App = (): React.ReactElement => {
         <p className="feature-status">
           <strong>Status:</strong> {checkStatus}
         </p>
+        {checkResults.length > 0 && (
+          <div className="check-results">
+            <p>
+              <strong>Detected numbered headings: {checkResults.length}</strong>
+            </p>
+            <ol className="check-heading-list">
+              {checkResults.map((heading, index) => (
+                <li key={`${heading.key}-${index}`}>
+                  <strong>{heading.key}</strong> — {heading.title}
+                </li>
+              ))}
+            </ol>
+          </div>
+        )}
+      </section>
+
+            <section className="feature-card">
+        <button
+          className="feature-toggle"
+          type="button"
+          onClick={() => toggleDescription("contdHeadings")}
+          aria-expanded={openDescriptions.contdHeadings}
+          aria-controls="contd-headings-description"
+        >
+          <span>Add CONT’D Headings</span>
+          <span aria-hidden="true">{openDescriptions.contdHeadings ? "▲" : "▼"}</span>
+        </button>
+        {openDescriptions.contdHeadings && (
+          <p id="contd-headings-description">
+            Adds continuation headings where the existing CONT’D rules determine they are needed.
+          </p>
+        )}
+        <div className="button-row">
+          <button type="button" onClick={handleAddContdHeadings} disabled={isBusy}>
+            {isAddingContd ? "Working..." : "Add CONT’D Headings"}
+          </button>
+          <button
+            className="undo-button"
+            type="button"
+            onClick={handleUndoContdHeadings}
+            disabled={isBusy}
+            aria-label="Undo CONT’D headings"
+            title="Undo CONT’D headings"
+          >
+            {"\u21B6"}
+          </button>
+        </div>
+        <p className="feature-status">
+          <strong>Status:</strong> {contdStatus}
+        </p>
       </section>
 
       <section className="feature-card">
@@ -194,70 +235,6 @@ const App = (): React.ReactElement => {
           <strong>Status:</strong> {keepStatus}
         </p>
       </section>
-
-      <section className="feature-card">
-        <button
-          className="feature-toggle"
-          type="button"
-          onClick={() => toggleDescription("contdHeadings")}
-          aria-expanded={openDescriptions.contdHeadings}
-          aria-controls="contd-headings-description"
-        >
-          <span>Add CONT’D Headings</span>
-          <span aria-hidden="true">{openDescriptions.contdHeadings ? "▲" : "▼"}</span>
-        </button>
-        {openDescriptions.contdHeadings && (
-          <p id="contd-headings-description">
-            Adds continuation headings where the existing CONT’D rules determine they are needed.
-          </p>
-        )}
-        <div className="button-row">
-          <button type="button" onClick={handleAddContdHeadings} disabled={isBusy}>
-            {isAddingContd ? "Working..." : "Add CONT’D Headings"}
-          </button>
-          <button
-            className="undo-button"
-            type="button"
-            onClick={handleUndoContdHeadings}
-            disabled={isBusy}
-            aria-label="Undo CONT’D headings"
-            title="Undo CONT’D headings"
-          >
-            {"\u21B6"}
-          </button>
-        </div>
-        <p className="feature-status">
-          <strong>Status:</strong> {contdStatus}
-        </p>
-      </section>
-
-      {pageCount !== null && (
-        <p className="page-summary">
-          <strong>Total pages:</strong> {pageCount}
-        </p>
-      )}
-
-      {paragraphs.length > 0 && (
-        <section className="results">
-          <h2>Paragraph pages</h2>
-          <ol>
-            {paragraphs.map((paragraph, index) => (
-              <li key={index}>
-                <div className="paragraph-heading">
-                  <strong>Paragraph {index + 1}</strong>
-                  <span>
-                    {formatPageLabel(paragraph.pages)}
-                    {paragraph.pages.length > 1 && (
-                      <span className="continuation"> — Continuation detected</span>
-                    )}
-                  </span>
-                </div>
-                <div className="paragraph-text">{paragraph.text}</div>
-              </li>
-            ))}
-          </ol>
-        </section>
-      )}
     </main>
   );
 };
