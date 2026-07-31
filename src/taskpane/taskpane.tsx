@@ -2,170 +2,185 @@ import * as React from "react";
 import { createRoot } from "react-dom/client";
 import "./taskpane.css";
 import {
-  analyzeDocumentPagination,
-  assessContinuationMarkers,
-  keepAllParagraphsOnOnePage,
   ParagraphPageResult,
   removeContinuationMarkers,
   removeKeepAllParagraphsTogether,
 } from "./word";
+import {
+  runAddContdHeadingsOnly,
+  runCheckDocumentOnly,
+  runKeepParagraphsIntactOnly,
+} from "./feature-actions";
 
 const formatPageLabel = (pages: number[]): string => {
-  if (pages.length === 0) {
-    return "Page unavailable";
-  }
-
-  if (pages.length === 1) {
-    return `Page ${pages[0]}`;
-  }
-
+  if (pages.length === 0) return "Page unavailable";
+  if (pages.length === 1) return `Page ${pages[0]}`;
   return `Pages ${pages.join("–")}`;
 };
 
+const errorMessage = (error: unknown): string =>
+  error instanceof Error ? error.message : JSON.stringify(error);
+
 const App = (): React.ReactElement => {
-  const [status, setStatus] = React.useState("Ready");
+  const [checkStatus, setCheckStatus] = React.useState("Ready to scan.");
+  const [keepStatus, setKeepStatus] = React.useState("Ready.");
+  const [contdStatus, setContdStatus] = React.useState("Ready.");
   const [pageCount, setPageCount] = React.useState<number | null>(null);
   const [paragraphs, setParagraphs] = React.useState<ParagraphPageResult[]>([]);
-  const [insertContinuationHeadings, setInsertContinuationHeadings] = React.useState(true);
   const [isChecking, setIsChecking] = React.useState(false);
+  const [isKeepingParagraphs, setIsKeepingParagraphs] = React.useState(false);
+  const [isAddingContd, setIsAddingContd] = React.useState(false);
+  const isBusy = isChecking || isKeepingParagraphs || isAddingContd;
 
-  const checkDocument = async (): Promise<void> => {
-    setStatus("Checking document...");
+  const handleCheckDocument = async (): Promise<void> => {
+    setCheckStatus("Scanning and reporting document issues...");
     setIsChecking(true);
     setPageCount(null);
     setParagraphs([]);
 
     try {
-      const insertionResult = await assessContinuationMarkers(insertContinuationHeadings);
-      const paginationResult = await analyzeDocumentPagination();
-
-      setPageCount(paginationResult.pageCount);
-      setParagraphs(paginationResult.paragraphs);
-      setStatus(
-        `Found ${insertionResult.continuingSectionsFound} continuing sections across ${insertionResult.continuationPagesFound} continuation pages. Inserted ${insertionResult.headingsInserted} continuation headings and skipped ${insertionResult.duplicatesSkipped} duplicates. ${insertionResult.limitationMessage}`
+      const result = await runCheckDocumentOnly();
+      setPageCount(result.pagination.pageCount);
+      setParagraphs(result.pagination.paragraphs);
+      setCheckStatus(
+        `Check completed. Found ${result.continuation.continuingSectionsFound} continuing sections across ${result.continuation.continuationPagesFound} continuation pages and ${result.continuation.duplicatesSkipped} existing duplicate continuation headings. No document changes were made.`
       );
-
-      console.log("Continuation insertion:", insertionResult);
-      console.log("Document pagination:", paginationResult);
     } catch (error) {
-      console.error("Word error:", error);
-
-      const message = error instanceof Error ? error.message : JSON.stringify(error);
-
-      setStatus(`Error: ${message}`);
+      console.error("Check Document error:", error);
+      setCheckStatus(`Check failed: ${errorMessage(error)}`);
     } finally {
       setIsChecking(false);
     }
   };
 
-  const undoMarkers = async (): Promise<void> => {
-    setStatus("Removing continuation markers...");
-    setIsChecking(true);
+  const handleKeepParagraphsIntact = async (): Promise<void> => {
+    setKeepStatus("Applying paragraph pagination formatting...");
+    setIsKeepingParagraphs(true);
+
+    try {
+      const result = await runKeepParagraphsIntactOnly();
+      setKeepStatus(
+        `Completed. ${result.paragraphsFound.toLocaleString()} paragraphs checked. Split paragraphs fixed: ${result.splitParagraphsFixed}. Orphan headings fixed: ${result.orphanHeadingsFixed}. ${result.paginationPasses} pagination passes completed. ${result.unfixableParagraphs} oversized paragraphs remain split.`
+      );
+    } catch (error) {
+      console.error("Keep Paragraphs Intact error:", error);
+      setKeepStatus(`Keep Paragraphs Intact failed: ${errorMessage(error)}`);
+    } finally {
+      setIsKeepingParagraphs(false);
+    }
+  };
+
+  const handleAddContdHeadings = async (): Promise<void> => {
+    setContdStatus("Detecting continuation pages and adding CONT’D headings...");
+    setIsAddingContd(true);
+
+    try {
+      const result = await runAddContdHeadingsOnly();
+      setContdStatus(
+        `Completed. Inserted ${result.headingsInserted} CONT’D headings across ${result.continuationPagesFound} continuation pages; skipped ${result.duplicatesSkipped} duplicates. ${result.limitationMessage}`
+      );
+    } catch (error) {
+      console.error("Add CONT’D Headings error:", error);
+      setContdStatus(`Add CONT’D Headings failed: ${errorMessage(error)}`);
+    } finally {
+      setIsAddingContd(false);
+    }
+  };
+
+  const handleUndoContdHeadings = async (): Promise<void> => {
+    setContdStatus("Removing continuation headings...");
+    setIsAddingContd(true);
 
     try {
       const removedCount = await removeContinuationMarkers();
-      const paginationResult = await analyzeDocumentPagination();
-
-      setPageCount(paginationResult.pageCount);
-      setParagraphs(paginationResult.paragraphs);
-      setStatus(`Removed ${removedCount} continuation headings or legacy markers.`);
+      setContdStatus(`Removed ${removedCount} continuation headings or legacy markers.`);
     } catch (error) {
-      console.error("Word error:", error);
-
-      const message = error instanceof Error ? error.message : JSON.stringify(error);
-      setStatus(`Error: ${message}`);
+      console.error("Remove CONT’D Headings error:", error);
+      setContdStatus(`Remove CONT’D Headings failed: ${errorMessage(error)}`);
     } finally {
-      setIsChecking(false);
+      setIsAddingContd(false);
     }
   };
 
-  const keepAllParagraphsTogether = async (): Promise<void> => {
-    setStatus("Applying paragraph pagination formatting...");
-    setIsChecking(true);
-
-    try {
-      const result = await keepAllParagraphsOnOnePage();
-      setStatus(
-        `Keep Paragraphs Intact completed. ${result.paragraphsFound.toLocaleString()} paragraphs checked. Split paragraphs fixed: ${result.splitParagraphsFixed}. Orphan headings fixed: ${result.orphanHeadingsFixed}. ${result.paginationPasses} pagination passes completed. ${result.unfixableParagraphs} paragraphs could not be kept intact because they exceeded one page. No unfinished fixable paragraphs remain across page boundaries.`
-      );
-    } catch (error) {
-      console.error("Word error:", error);
-      const message = error instanceof Error ? error.message : JSON.stringify(error);
-      setStatus(`Error applying paragraph pagination formatting: ${message}`);
-    } finally {
-      setIsChecking(false);
-    }
-  };
-
-  const removeKeepAllParagraphs = async (): Promise<void> => {
-    setStatus("Removing paragraph pagination formatting...");
-    setIsChecking(true);
+  const handleUndoKeepParagraphs = async (): Promise<void> => {
+    setKeepStatus("Removing paragraph pagination formatting...");
+    setIsKeepingParagraphs(true);
 
     try {
       const result = await removeKeepAllParagraphsTogether();
-      setStatus(
-        `Success: removed Keep lines together from ${result.paragraphsChanged} of ${result.paragraphsFound} paragraphs. Other formatting was preserved.`
+      setKeepStatus(
+        `Removed Keep lines together from ${result.paragraphsChanged} of ${result.paragraphsFound} paragraphs. Other formatting was preserved.`
       );
     } catch (error) {
-      console.error("Word error:", error);
-      const message = error instanceof Error ? error.message : JSON.stringify(error);
-      setStatus(`Error removing paragraph pagination formatting: ${message}`);
+      console.error("Undo Keep Paragraphs Intact error:", error);
+      setKeepStatus(`Undo Keep Paragraphs Intact failed: ${errorMessage(error)}`);
     } finally {
-      setIsChecking(false);
+      setIsKeepingParagraphs(false);
     }
   };
 
   return (
     <main className="app">
-      <h1>Document Continuation Checker</h1>
+      <h1>Document Checker</h1>
 
-      <p>Check whether document content continues onto another page.</p>
-
-      <label className="marker-option">
-        <input
-          type="checkbox"
-          checked={insertContinuationHeadings}
-          onChange={(event) => setInsertContinuationHeadings(event.target.checked)}
-          disabled={isChecking}
-        />
-        Insert repeated numeric headings with (Cont&apos;d)
-      </label>
-
-      <div className="button-row">
-        <button type="button" onClick={checkDocument} disabled={isChecking}>
-          {isChecking ? "Working..." : "Check Document"}
+      <section className="feature-card">
+        <h2>Check Document</h2>
+        <p>Scans the report and reports pagination and continuation issues without changing it.</p>
+        <button type="button" onClick={handleCheckDocument} disabled={isBusy}>
+          {isChecking ? "Checking..." : "Check Document"}
         </button>
-        <button
-          className="undo-button"
-          type="button"
-          onClick={undoMarkers}
-          disabled={isChecking}
-          aria-label="Undo continuation markers"
-          title="Undo continuation markers"
-        >
-          ↶
-        </button>
-      </div>
+        <p className="feature-status">
+          <strong>Status:</strong> {checkStatus}
+        </p>
+      </section>
 
-      <div className="button-row">
-        <button type="button" onClick={keepAllParagraphsTogether} disabled={isChecking}>
-          Keep Paragraphs Intact
-        </button>
-        <button
-          className="undo-button"
-          type="button"
-          onClick={removeKeepAllParagraphs}
-          disabled={isChecking}
-          aria-label="Undo Keep Paragraphs Intact"
-          title="Undo Keep Paragraphs Intact"
-        >
-          {"\u21B6"}
-        </button>
-      </div>
+      <section className="feature-card">
+        <h2>Keep Paragraphs Intact</h2>
+        <p>
+          Prevents paragraphs and their immediate headings from splitting awkwardly across pages.
+        </p>
+        <div className="button-row">
+          <button type="button" onClick={handleKeepParagraphsIntact} disabled={isBusy}>
+            {isKeepingParagraphs ? "Formatting..." : "Keep Paragraphs Intact"}
+          </button>
+          <button
+            className="undo-button"
+            type="button"
+            onClick={handleUndoKeepParagraphs}
+            disabled={isBusy}
+            aria-label="Undo Keep Paragraphs Intact"
+            title="Undo Keep Paragraphs Intact"
+          >
+            {"\u21B6"}
+          </button>
+        </div>
+        <p className="feature-status">
+          <strong>Status:</strong> {keepStatus}
+        </p>
+      </section>
 
-      <p>
-        <strong>Status:</strong> {status}
-      </p>
+      <section className="feature-card">
+        <h2>Add CONT’D Headings</h2>
+        <p>Adds continuation headings where the existing CONT’D rules determine they are needed.</p>
+        <div className="button-row">
+          <button type="button" onClick={handleAddContdHeadings} disabled={isBusy}>
+            {isAddingContd ? "Working..." : "Add CONT’D Headings"}
+          </button>
+          <button
+            className="undo-button"
+            type="button"
+            onClick={handleUndoContdHeadings}
+            disabled={isBusy}
+            aria-label="Undo CONT’D headings"
+            title="Undo CONT’D headings"
+          >
+            {"\u21B6"}
+          </button>
+        </div>
+        <p className="feature-status">
+          <strong>Status:</strong> {contdStatus}
+        </p>
+      </section>
 
       {pageCount !== null && (
         <p className="page-summary">
@@ -174,9 +189,8 @@ const App = (): React.ReactElement => {
       )}
 
       {paragraphs.length > 0 && (
-        <section>
+        <section className="results">
           <h2>Paragraph pages</h2>
-
           <ol>
             {paragraphs.map((paragraph, index) => (
               <li key={index}>
@@ -201,10 +215,6 @@ const App = (): React.ReactElement => {
 
 Office.onReady(() => {
   const container = document.getElementById("container");
-
-  if (!container) {
-    throw new Error("Could not find the React container.");
-  }
-
+  if (!container) throw new Error("Could not find the React container.");
   createRoot(container).render(<App />);
 });

@@ -71,6 +71,11 @@ export interface ContinuationInsertionResult {
   limitationMessage: string;
 }
 
+export interface DocumentCheckResult {
+  continuation: ContinuationInsertionResult;
+  pagination: DocumentPaginationResult;
+}
+
 interface HeadingDetails {
   key: string;
   level: number;
@@ -296,6 +301,16 @@ export async function analyzeDocumentPagination(): Promise<DocumentPaginationRes
         .filter((paragraph) => paragraph.text.trim() !== ""),
     };
   });
+}
+
+export async function checkDocumentIssues(): Promise<DocumentCheckResult> {
+  const continuation = await assessContinuationMarkers(false);
+  const pagination = await analyzeDocumentPagination();
+  return { continuation, pagination };
+}
+
+export async function addContdHeadings(): Promise<ContinuationInsertionResult> {
+  return assessContinuationMarkers(true);
 }
 
 interface ContinuationPassResult extends ContinuationInsertionResult {
