@@ -22,6 +22,11 @@ const errorMessage = (error: unknown): string =>
   error instanceof Error ? error.message : JSON.stringify(error);
 
 const App = (): React.ReactElement => {
+  const [openDescriptions, setOpenDescriptions] = React.useState({
+    checkDocument: false,
+    keepParagraphs: false,
+    contdHeadings: false,
+  });
   const [checkStatus, setCheckStatus] = React.useState("Ready to scan.");
   const [keepStatus, setKeepStatus] = React.useState("Ready.");
   const [contdStatus, setContdStatus] = React.useState("Ready.");
@@ -31,6 +36,13 @@ const App = (): React.ReactElement => {
   const [isKeepingParagraphs, setIsKeepingParagraphs] = React.useState(false);
   const [isAddingContd, setIsAddingContd] = React.useState(false);
   const isBusy = isChecking || isKeepingParagraphs || isAddingContd;
+
+  const toggleDescription = (key: keyof typeof openDescriptions): void => {
+    setOpenDescriptions((previous) => ({
+      ...previous,
+      [key]: !previous[key],
+    }));
+  };
 
   const handleCheckDocument = async (): Promise<void> => {
     setCheckStatus("Scanning and reporting document issues...");
@@ -124,8 +136,21 @@ const App = (): React.ReactElement => {
       <h1>Document Checker</h1>
 
       <section className="feature-card">
-        <h2>Check Document</h2>
-        <p>Scans the report and reports pagination and continuation issues without changing it.</p>
+        <button
+          className="feature-toggle"
+          type="button"
+          onClick={() => toggleDescription("checkDocument")}
+          aria-expanded={openDescriptions.checkDocument}
+          aria-controls="check-document-description"
+        >
+          <span>Check Document</span>
+          <span aria-hidden="true">{openDescriptions.checkDocument ? "▲" : "▼"}</span>
+        </button>
+        {openDescriptions.checkDocument && (
+          <p id="check-document-description">
+            Scans the report and reports pagination and continuation issues without changing it.
+          </p>
+        )}
         <button type="button" onClick={handleCheckDocument} disabled={isBusy}>
           {isChecking ? "Checking..." : "Check Document"}
         </button>
@@ -135,10 +160,21 @@ const App = (): React.ReactElement => {
       </section>
 
       <section className="feature-card">
-        <h2>Keep Paragraphs Intact</h2>
-        <p>
-          Prevents paragraphs and their immediate headings from splitting awkwardly across pages.
-        </p>
+        <button
+          className="feature-toggle"
+          type="button"
+          onClick={() => toggleDescription("keepParagraphs")}
+          aria-expanded={openDescriptions.keepParagraphs}
+          aria-controls="keep-paragraphs-description"
+        >
+          <span>Keep Paragraphs Intact</span>
+          <span aria-hidden="true">{openDescriptions.keepParagraphs ? "▲" : "▼"}</span>
+        </button>
+        {openDescriptions.keepParagraphs && (
+          <p id="keep-paragraphs-description">
+            Prevents paragraphs and their immediate headings from splitting awkwardly across pages.
+          </p>
+        )}
         <div className="button-row">
           <button type="button" onClick={handleKeepParagraphsIntact} disabled={isBusy}>
             {isKeepingParagraphs ? "Formatting..." : "Keep Paragraphs Intact"}
@@ -160,8 +196,21 @@ const App = (): React.ReactElement => {
       </section>
 
       <section className="feature-card">
-        <h2>Add CONT’D Headings</h2>
-        <p>Adds continuation headings where the existing CONT’D rules determine they are needed.</p>
+        <button
+          className="feature-toggle"
+          type="button"
+          onClick={() => toggleDescription("contdHeadings")}
+          aria-expanded={openDescriptions.contdHeadings}
+          aria-controls="contd-headings-description"
+        >
+          <span>Add CONT’D Headings</span>
+          <span aria-hidden="true">{openDescriptions.contdHeadings ? "▲" : "▼"}</span>
+        </button>
+        {openDescriptions.contdHeadings && (
+          <p id="contd-headings-description">
+            Adds continuation headings where the existing CONT’D rules determine they are needed.
+          </p>
+        )}
         <div className="button-row">
           <button type="button" onClick={handleAddContdHeadings} disabled={isBusy}>
             {isAddingContd ? "Working..." : "Add CONT’D Headings"}

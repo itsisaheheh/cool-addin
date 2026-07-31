@@ -23,6 +23,7 @@ import {
   parseNumericHeading,
   startsWithNumericHeading,
 } from "./continuation-format";
+import { runContdInsertionUntilStable } from "./contd-stabilization";
 
 export { continuationText, parseNumericHeading } from "./continuation-format";
 
@@ -310,7 +311,16 @@ export async function checkDocumentIssues(): Promise<DocumentCheckResult> {
 }
 
 export async function addContdHeadings(): Promise<ContinuationInsertionResult> {
-  return assessContinuationMarkers(true);
+  const paragraphCount = await Word.run(async (context) => {
+    const paragraphs = context.document.body.paragraphs;
+    paragraphs.load("items");
+    await context.sync();
+    return paragraphs.items.length;
+  });
+
+  return runContdInsertionUntilStable(Math.max(2, paragraphCount + 2), async () =>
+    assessContinuationMarkers(true)
+  );
 }
 
 interface ContinuationPassResult extends ContinuationInsertionResult {

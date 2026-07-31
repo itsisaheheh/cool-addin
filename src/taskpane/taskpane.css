@@ -51,6 +51,26 @@ body {
   margin: 0 0 6px;
 }
 
+.app .feature-toggle {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  display: flex;
+  font-size: 15px;
+  font-weight: 700;
+  justify-content: space-between;
+  padding: 0;
+  text-align: left;
+  text-transform: uppercase;
+  width: 100%;
+}
+
+.app .feature-toggle:focus-visible {
+  outline: 2px solid #0078d4;
+  outline-offset: 4px;
+}
+
 .feature-card > p {
   margin: 6px 0 12px;
 }
