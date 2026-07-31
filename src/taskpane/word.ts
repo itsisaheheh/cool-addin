@@ -5,6 +5,24 @@
 
 /* global document, Office, Word */
 
+import {
+  addKeepLinesToAllParagraphs,
+  disableMoveToNextPage,
+  DocumentKeepLinesResult,
+  enableKeepTogether,
+  MoveParagraphsResult,
+  removeKeepLinesFromAllParagraphs,
+  RemoveMoveResult,
+} from "./paragraph-format";
+import {
+  continuationText,
+  CONTINUATION_SUFFIX_PATTERN,
+  parseNumericHeading,
+  startsWithNumericHeading,
+} from "./continuation-format";
+
+export { continuationText, parseNumericHeading } from "./continuation-format";
+
 Office.onReady((info) => {
   if (info.host === Office.HostType.Word) {
     const sideloadMessage = document.getElementById("sideload-msg");
@@ -36,19 +54,166 @@ export interface DocumentPaginationResult {
 }
 
 export interface ContinuationInsertionResult {
-  boundariesFound: number;
-  markersInserted: number;
+  continuingSectionsFound: number;
+  continuationPagesFound: number;
+  headingsInserted: number;
+  duplicatesSkipped: number;
   limitationMessage: string;
 }
 
-const CONTINUED_ON_MARKER = "(CONT'D)";
-const MARKER_SHAPE_PREFIX = "word-continuation-marker";
-const MARKER_WIDTH = 96;
-const MARKER_HEIGHT = 18;
-const PAGE_EDGE_OFFSET = 18;
+interface HeadingDetails {
+  key: string;
+  level: number;
+  text: string;
+  paragraph: Word.Paragraph;
+}
+
+interface ParagraphDetails {
+  paragraph: Word.Paragraph;
+  text: string;
+  pages: number[];
+  heading: HeadingDetails | null;
+  isInsertedContinuation: boolean;
+}
+
+interface ContinuationPage {
+  pageIndex: number;
+  anchor: Word.Paragraph;
+  pageStartRange: Word.Range;
+  detectedHeadings: HeadingDetails[];
+  headings: HeadingDetails[];
+  existingTexts: Set<string>;
+  startsInsideParagraph: boolean;
+}
+
+const CONTINUATION_TAG_PREFIX = "word-continuation-heading:";
+const LEGACY_MARKER_SHAPE_PREFIX = "word-continuation-marker";
 
 export const PAGINATION_REQUIREMENT_MESSAGE =
   "Page detection requires WordApiDesktop 1.2, which is available in supported Word desktop clients.";
+
+export async function moveSelectedParagraphsToNextPage(): Promise<MoveParagraphsResult> {
+  if (!Office.context.requirements.isSetSupported("WordApi", "1.5")) {
+    throw new Error(
+      "Move Paragraph to Next Page requires WordApi 1.5, which is available in supported Word clients."
+    );
+  }
+
+  return Word.run(async (context) => {
+    // Word returns the complete paragraph collection for both a text selection and
+    // a collapsed insertion point.
+    const paragraphs = context.document.getSelection().paragraphs;
+    paragraphs.load("items");
+    await context.sync();
+
+    const paragraphRanges = paragraphs.items.map((paragraph) =>
+      paragraph.getRange(Word.RangeLocation.whole)
+    );
+    const paragraphPages = paragraphRanges.map((range) => {
+      const pages = range.pages;
+      pages.load("items/index");
+      return pages;
+    });
+    const paragraphOoxml = paragraphRanges.map((range) => range.getOoxml());
+    await context.sync();
+
+    const update = enableKeepTogether(
+      paragraphRanges.map((_range, index) => ({
+        ooxml: paragraphOoxml[index].value,
+        pageCount: paragraphPages[index].items.length,
+      }))
+    );
+
+    for (let index = paragraphRanges.length - 1; index >= 0; index -= 1) {
+      paragraphRanges[index].insertOoxml(update.paragraphs[index], Word.InsertLocation.replace);
+    }
+    await context.sync();
+    return {
+      paragraphsUpdated: update.paragraphsUpdated,
+      splitParagraphsFound: update.splitParagraphsFound,
+    };
+  });
+}
+
+export async function removeMoveFromSelectedParagraphs(): Promise<RemoveMoveResult> {
+  if (!Office.context.requirements.isSetSupported("WordApi", "1.5")) {
+    throw new Error(
+      "Remove Move to Next Page requires WordApi 1.5, which is available in supported Word clients."
+    );
+  }
+
+  return Word.run(async (context) => {
+    const paragraphs = context.document.getSelection().paragraphs;
+    paragraphs.load("items");
+    await context.sync();
+
+    const paragraphRanges = paragraphs.items.map((paragraph) =>
+      paragraph.getRange(Word.RangeLocation.whole)
+    );
+    const paragraphOoxml = paragraphRanges.map((range) => range.getOoxml());
+    await context.sync();
+
+    const update = disableMoveToNextPage(paragraphOoxml.map(({ value }) => value));
+    for (let index = paragraphRanges.length - 1; index >= 0; index -= 1) {
+      paragraphRanges[index].insertOoxml(update.paragraphs[index], Word.InsertLocation.replace);
+    }
+    await context.sync();
+    return update.result;
+  });
+}
+
+export async function keepAllParagraphsOnOnePage(): Promise<DocumentKeepLinesResult> {
+  if (!Office.context.requirements.isSetSupported("WordApi", "1.1")) {
+    throw new Error("Keep All Paragraphs on One Page requires WordApi 1.1.");
+  }
+
+  return Word.run(async (context) => {
+    const body = context.document.body;
+    const bodyOoxml = body.getOoxml();
+    await context.sync();
+
+    // ClientResult values become available after context.sync(); they aren't loadable ClientObjects.
+    // eslint-disable-next-line office-addins/load-object-before-read
+    const update = addKeepLinesToAllParagraphs(bodyOoxml.value);
+    if (update.result.paragraphsChanged > 0) {
+      body.insertOoxml(update.ooxml, Word.InsertLocation.replace);
+      await context.sync();
+    }
+    return update.result;
+  });
+}
+
+export async function removeKeepAllParagraphsTogether(): Promise<DocumentKeepLinesResult> {
+  if (!Office.context.requirements.isSetSupported("WordApi", "1.1")) {
+    throw new Error("Remove Keep All Paragraphs Together requires WordApi 1.1.");
+  }
+
+  return Word.run(async (context) => {
+    const body = context.document.body;
+    const bodyOoxml = body.getOoxml();
+    await context.sync();
+
+    // ClientResult values become available after context.sync(); they aren't loadable ClientObjects.
+    // eslint-disable-next-line office-addins/load-object-before-read
+    const update = removeKeepLinesFromAllParagraphs(bodyOoxml.value);
+    if (update.result.paragraphsChanged > 0) {
+      body.insertOoxml(update.ooxml, Word.InsertLocation.replace);
+      await context.sync();
+    }
+    return update.result;
+  });
+}
+
+const normalizeHeadingText = (text: string): string =>
+  text.replace(/\s+/g, " ").trim().toLocaleLowerCase();
+
+const updateHierarchy = (
+  hierarchy: Array<HeadingDetails | undefined>,
+  heading: HeadingDetails
+): void => {
+  hierarchy.length = heading.level;
+  hierarchy[heading.level - 1] = heading;
+};
 
 export async function analyzeDocumentPagination(): Promise<DocumentPaginationResult> {
   if (!Office.context.requirements.isSetSupported("WordApiDesktop", "1.2")) {
@@ -71,22 +236,20 @@ export async function analyzeDocumentPagination(): Promise<DocumentPaginationRes
 
     await context.sync();
 
-    const paragraphResults = paragraphs.items
-      .map((paragraph, index) => ({
-        text: paragraph.text,
-        pages: paragraphPageCollections[index].items.map((page) => page.index),
-      }))
-      .filter((paragraph) => paragraph.text.trim() !== "");
-
     return {
       pageCount: pages.items.length,
-      paragraphs: paragraphResults,
+      paragraphs: paragraphs.items
+        .map((paragraph, index) => ({
+          text: paragraph.text,
+          pages: paragraphPageCollections[index].items.map((page) => page.index),
+        }))
+        .filter((paragraph) => paragraph.text.trim() !== ""),
     };
   });
 }
 
 export async function assessContinuationMarkers(
-  includeContinuedOnMarker: boolean
+  insertContinuationHeadings: boolean
 ): Promise<ContinuationInsertionResult> {
   if (!Office.context.requirements.isSetSupported("WordApiDesktop", "1.2")) {
     throw new Error(PAGINATION_REQUIREMENT_MESSAGE);
@@ -95,112 +258,163 @@ export async function assessContinuationMarkers(
   return Word.run(async (context) => {
     const paragraphs = context.document.body.paragraphs;
     const pages = context.document.activeWindow.activePane.pages;
-    const shapes = context.document.body.shapes;
+    const contentControls = context.document.body.contentControls;
 
-    paragraphs.load("items/text");
-    pages.load("items/index,items/height,items/width");
-    shapes.load("items/name");
+    paragraphs.load(
+      "items/text,items/style,items/styleBuiltIn,items/outlineLevel,items/isListItem," +
+        "items/alignment,items/firstLineIndent,items/leftIndent,items/rightIndent," +
+        "items/lineSpacing,items/spaceBefore,items/spaceAfter"
+    );
+    pages.load("items/index");
+    contentControls.load("items/tag");
     await context.sync();
 
     const paragraphPageCollections = paragraphs.items.map((paragraph) => {
       const paragraphPages = paragraph.getRange().pages;
       paragraphPages.load("items/index");
+      paragraph.font.load("name,size,bold,italic,color");
+      paragraph.listItemOrNullObject.load("isNullObject,listString,level");
       return paragraphPages;
     });
-
     await context.sync();
 
-    const continuedParagraphs = paragraphs.items
-      .map((paragraph, index) => ({
-        paragraph,
-        pageIndexes: paragraphPageCollections[index].items.map((page) => page.index),
-      }))
-      .filter(
-        ({ paragraph, pageIndexes }) => paragraph.text.trim() !== "" && pageIndexes.length > 1
-      );
-
-    const boundariesFound = continuedParagraphs.reduce(
-      (total, { pageIndexes }) => total + pageIndexes.length - 1,
-      0
+    const insertedContinuationTags = new Set(
+      contentControls.items
+        .map((control) => control.tag)
+        .filter((tag) => tag.startsWith(CONTINUATION_TAG_PREFIX))
     );
-    const existingShapeNames = new Set(shapes.items.map((shape) => shape.name));
-    const pagesByIndex = new Map(pages.items.map((page) => [page.index, page]));
-    let markersInserted = 0;
 
-    for (const shape of shapes.items) {
-      if (shape.name.startsWith(`${MARKER_SHAPE_PREFIX}-from-`)) {
-        shape.delete();
-        existingShapeNames.delete(shape.name);
-      }
+    const paragraphDetails: ParagraphDetails[] = paragraphs.items
+      .map((paragraph, index) => {
+        const text = paragraph.text.trim();
+        const listItem = paragraph.listItemOrNullObject;
+        const listPrefix = !listItem.isNullObject ? listItem.listString.trim() : "";
+        const numeric = parseNumericHeading(text) ?? parseNumericHeading(`${listPrefix} `);
+        const fullHeadingText =
+          numeric && listPrefix && !startsWithNumericHeading(text) ? `${listPrefix} ${text}` : text;
+        return {
+          paragraph,
+          text,
+          pages: paragraphPageCollections[index].items.map((page) => page.index),
+          heading: numeric
+            ? { key: numeric.key, level: numeric.level, text: fullHeadingText, paragraph }
+            : null,
+          isInsertedContinuation: CONTINUATION_SUFFIX_PATTERN.test(text),
+        };
+      })
+      .filter((details) => details.text !== "");
+
+    const originalParagraphs = paragraphDetails.filter(
+      (details) => !details.isInsertedContinuation
+    );
+    const activeHierarchy: Array<HeadingDetails | undefined> = [];
+    const hierarchyBeforeParagraph = new Map<Word.Paragraph, HeadingDetails[]>();
+
+    for (const details of originalParagraphs) {
+      hierarchyBeforeParagraph.set(
+        details.paragraph,
+        activeHierarchy.filter((heading): heading is HeadingDetails => Boolean(heading))
+      );
+      if (details.heading) updateHierarchy(activeHierarchy, details.heading);
     }
 
-    const insertMarker = (
-      pageIndex: number,
-      marker: string,
-      markerKind: "from" | "on",
-      atBottom: boolean
-    ): void => {
-      const shapeName = `${MARKER_SHAPE_PREFIX}-${markerKind}-page-${pageIndex}`;
-      if (existingShapeNames.has(shapeName)) {
-        return;
+    const continuationPages: ContinuationPage[] = [];
+    for (const page of pages.items.slice(1)) {
+      const paragraphsOnPage = originalParagraphs.filter((details) =>
+        details.pages.includes(page.index)
+      );
+      const firstOnPage = paragraphsOnPage[0];
+      if (!firstOnPage) continue;
+
+      const startedEarlier = firstOnPage.pages.some((pageIndex) => pageIndex < page.index);
+      if (!startedEarlier && firstOnPage.heading) continue;
+
+      const hierarchy = [...(hierarchyBeforeParagraph.get(firstOnPage.paragraph) ?? [])];
+      if (firstOnPage.heading && startedEarlier) updateHierarchy(hierarchy, firstOnPage.heading);
+      if (hierarchy.length === 0) continue;
+
+      continuationPages.push({
+        pageIndex: page.index,
+        anchor: firstOnPage.paragraph,
+        pageStartRange: page.getRange(Word.RangeLocation.start),
+        detectedHeadings: hierarchy,
+        headings: hierarchy.slice(-1),
+        existingTexts: new Set(
+          paragraphDetails
+            .filter((details) => details.pages.includes(page.index))
+            .map((details) => normalizeHeadingText(details.text))
+        ),
+        startsInsideParagraph: startedEarlier,
+      });
+    }
+
+    const continuingSectionKeys = new Set<string>();
+    let headingsInserted = 0;
+    let duplicatesSkipped = 0;
+
+    // Work from the last rendered page toward the first so inserting at a page
+    // boundary doesn't invalidate the ranges for later continuation pages.
+    for (const continuationPage of [...continuationPages].reverse()) {
+      for (const heading of continuationPage.detectedHeadings) {
+        continuingSectionKeys.add(heading.key);
       }
+      for (const heading of continuationPage.headings) {
+        const text = continuationText(heading.text);
+        const normalizedText = normalizeHeadingText(text);
+        const tag = `${CONTINUATION_TAG_PREFIX}${continuationPage.pageIndex}:${heading.key}`;
 
-      const page = pagesByIndex.get(pageIndex);
-      if (!page) {
-        return;
-      }
-
-      const shape = page.getRange(Word.RangeLocation.start).insertTextBox(marker, {
-        width: MARKER_WIDTH,
-        height: MARKER_HEIGHT,
-      });
-
-      shape.name = shapeName;
-      shape.altTextDescription = `Continuation marker ${marker} for page ${pageIndex}`;
-      shape.relativeHorizontalPosition = Word.RelativeHorizontalPosition.page;
-      shape.relativeVerticalPosition = Word.RelativeVerticalPosition.page;
-      shape.left = Math.max(0, (page.width - MARKER_WIDTH) / 2);
-      shape.top = atBottom
-        ? Math.max(0, page.height - MARKER_HEIGHT - PAGE_EDGE_OFFSET)
-        : PAGE_EDGE_OFFSET;
-      shape.allowOverlap = true;
-      shape.fill.clear();
-      shape.textWrap.type = Word.ShapeTextWrapType.front;
-      shape.textFrame.set({
-        autoSizeSetting: Word.ShapeAutoSize.none,
-        bottomMargin: 0,
-        leftMargin: 0,
-        rightMargin: 0,
-        topMargin: 0,
-        verticalAlignment: Word.ShapeTextVerticalAlignment.middle,
-        wordWrap: false,
-      });
-      shape.body.font.set({
-        bold: true,
-        name: "Arial",
-        size: 10,
-      });
-      shape.body.paragraphs.getFirst().alignment = Word.Alignment.centered;
-
-      existingShapeNames.add(shapeName);
-      markersInserted += 1;
-    };
-
-    for (const { pageIndexes } of continuedParagraphs) {
-      for (let index = 0; index < pageIndexes.length - 1; index += 1) {
-        if (includeContinuedOnMarker) {
-          insertMarker(pageIndexes[index + 1], CONTINUED_ON_MARKER, "on", false);
+        if (
+          continuationPage.existingTexts.has(normalizedText) ||
+          insertedContinuationTags.has(tag)
+        ) {
+          duplicatesSkipped += 1;
+          continue;
         }
+        if (!insertContinuationHeadings) continue;
+
+        const inserted = continuationPage.startsInsideParagraph
+          ? continuationPage.pageStartRange.insertParagraph(text, Word.InsertLocation.before)
+          : continuationPage.anchor.insertParagraph(text, Word.InsertLocation.before);
+        inserted.style = heading.paragraph.style;
+        inserted.alignment = heading.paragraph.alignment;
+        inserted.firstLineIndent = heading.paragraph.firstLineIndent;
+        inserted.leftIndent = heading.paragraph.leftIndent;
+        inserted.rightIndent = heading.paragraph.rightIndent;
+        inserted.lineSpacing = heading.paragraph.lineSpacing;
+        inserted.spaceBefore = heading.paragraph.spaceBefore;
+        inserted.spaceAfter = heading.paragraph.spaceAfter;
+        inserted.font.set({
+          name: heading.paragraph.font.name,
+          size: heading.paragraph.font.size,
+          bold: heading.paragraph.font.bold,
+          italic: heading.paragraph.font.italic,
+          color: heading.paragraph.font.color,
+        });
+
+        const control = inserted.insertContentControl();
+        control.tag = tag;
+        control.title = "Continuation heading";
+        control.appearance = Word.ContentControlAppearance.hidden;
+        insertedContinuationTags.add(tag);
+        continuationPage.existingTexts.add(normalizedText);
+        headingsInserted += 1;
       }
     }
 
-    await context.sync();
+    if (headingsInserted > 0) {
+      await context.sync();
+      const repaginatedPages = context.document.activeWindow.activePane.pages;
+      repaginatedPages.load("items/index");
+      await context.sync();
+    }
 
     return {
-      boundariesFound,
-      markersInserted,
+      continuingSectionsFound: continuingSectionKeys.size,
+      continuationPagesFound: continuationPages.length,
+      headingsInserted,
+      duplicatesSkipped,
       limitationMessage:
-        "(CONT'D) markers are floating text boxes anchored to the following pages, so the original paragraph text and pagination are unchanged.",
+        "Word repaginates dynamically after insertion. One normal continuation heading is inserted at the start of each continuation page; if the page starts inside a split paragraph, Word creates a paragraph boundary there.",
     };
   });
 }
@@ -211,20 +425,24 @@ export async function removeContinuationMarkers(): Promise<number> {
   }
 
   return Word.run(async (context) => {
+    const contentControls = context.document.body.contentControls;
     const shapes = context.document.body.shapes;
+    contentControls.load("items/tag");
     shapes.load("items/name");
     await context.sync();
 
-    const markerShapes = shapes.items.filter((shape) =>
-      shape.name.startsWith(`${MARKER_SHAPE_PREFIX}-`)
+    const continuationControls = contentControls.items.filter((control) =>
+      control.tag.startsWith(CONTINUATION_TAG_PREFIX)
+    );
+    const legacyShapes = shapes.items.filter((shape) =>
+      shape.name.startsWith(`${LEGACY_MARKER_SHAPE_PREFIX}-`)
     );
 
-    for (const shape of markerShapes) {
-      shape.delete();
-    }
+    for (const control of continuationControls) control.delete(false);
+    for (const shape of legacyShapes) shape.delete();
 
     await context.sync();
-    return markerShapes.length;
+    return continuationControls.length + legacyShapes.length;
   });
 }
 

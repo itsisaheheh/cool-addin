@@ -4,8 +4,10 @@ import "./taskpane.css";
 import {
   analyzeDocumentPagination,
   assessContinuationMarkers,
+  keepAllParagraphsOnOnePage,
   ParagraphPageResult,
   removeContinuationMarkers,
+  removeKeepAllParagraphsTogether,
 } from "./word";
 
 const formatPageLabel = (pages: number[]): string => {
@@ -24,7 +26,7 @@ const App = (): React.ReactElement => {
   const [status, setStatus] = React.useState("Ready");
   const [pageCount, setPageCount] = React.useState<number | null>(null);
   const [paragraphs, setParagraphs] = React.useState<ParagraphPageResult[]>([]);
-  const [includeContinuedOnMarker, setIncludeContinuedOnMarker] = React.useState(false);
+  const [insertContinuationHeadings, setInsertContinuationHeadings] = React.useState(true);
   const [isChecking, setIsChecking] = React.useState(false);
 
   const checkDocument = async (): Promise<void> => {
@@ -34,13 +36,13 @@ const App = (): React.ReactElement => {
     setParagraphs([]);
 
     try {
-      const insertionResult = await assessContinuationMarkers(includeContinuedOnMarker);
+      const insertionResult = await assessContinuationMarkers(insertContinuationHeadings);
       const paginationResult = await analyzeDocumentPagination();
 
       setPageCount(paginationResult.pageCount);
       setParagraphs(paginationResult.paragraphs);
       setStatus(
-        `Found ${insertionResult.boundariesFound} continuation boundaries and inserted ${insertionResult.markersInserted} markers. ${insertionResult.limitationMessage}`
+        `Found ${insertionResult.continuingSectionsFound} continuing sections across ${insertionResult.continuationPagesFound} continuation pages. Inserted ${insertionResult.headingsInserted} continuation headings and skipped ${insertionResult.duplicatesSkipped} duplicates. ${insertionResult.limitationMessage}`
       );
 
       console.log("Continuation insertion:", insertionResult);
@@ -66,12 +68,48 @@ const App = (): React.ReactElement => {
 
       setPageCount(paginationResult.pageCount);
       setParagraphs(paginationResult.paragraphs);
-      setStatus(`Removed ${removedCount} continuation markers.`);
+      setStatus(`Removed ${removedCount} continuation headings or legacy markers.`);
     } catch (error) {
       console.error("Word error:", error);
 
       const message = error instanceof Error ? error.message : JSON.stringify(error);
       setStatus(`Error: ${message}`);
+    } finally {
+      setIsChecking(false);
+    }
+  };
+
+  const keepAllParagraphsTogether = async (): Promise<void> => {
+    setStatus("Applying paragraph pagination formatting...");
+    setIsChecking(true);
+
+    try {
+      const result = await keepAllParagraphsOnOnePage();
+      setStatus(
+        `Success: All applicable paragraphs will now stay on the same page. Formatted ${result.paragraphsChanged} of ${result.paragraphsFound} paragraphs; ${result.paragraphsAlreadyFormatted} were already formatted. Paragraphs longer than a full page may still split in Word.`
+      );
+    } catch (error) {
+      console.error("Word error:", error);
+      const message = error instanceof Error ? error.message : JSON.stringify(error);
+      setStatus(`Error applying paragraph pagination formatting: ${message}`);
+    } finally {
+      setIsChecking(false);
+    }
+  };
+
+  const removeKeepAllParagraphs = async (): Promise<void> => {
+    setStatus("Removing paragraph pagination formatting...");
+    setIsChecking(true);
+
+    try {
+      const result = await removeKeepAllParagraphsTogether();
+      setStatus(
+        `Success: removed Keep lines together from ${result.paragraphsChanged} of ${result.paragraphsFound} paragraphs. Other formatting was preserved.`
+      );
+    } catch (error) {
+      console.error("Word error:", error);
+      const message = error instanceof Error ? error.message : JSON.stringify(error);
+      setStatus(`Error removing paragraph pagination formatting: ${message}`);
     } finally {
       setIsChecking(false);
     }
@@ -86,11 +124,11 @@ const App = (): React.ReactElement => {
       <label className="marker-option">
         <input
           type="checkbox"
-          checked={includeContinuedOnMarker}
-          onChange={(event) => setIncludeContinuedOnMarker(event.target.checked)}
+          checked={insertContinuationHeadings}
+          onChange={(event) => setInsertContinuationHeadings(event.target.checked)}
           disabled={isChecking}
         />
-        Insert (CONT&apos;D) at the beginning of the next page
+        Insert repeated numeric headings with (Cont&apos;d)
       </label>
 
       <div className="button-row">
@@ -106,6 +144,22 @@ const App = (): React.ReactElement => {
           title="Undo continuation markers"
         >
           ↶
+        </button>
+      </div>
+
+      <div className="button-row">
+        <button type="button" onClick={keepAllParagraphsTogether} disabled={isChecking}>
+          Keep Paragraphs Intact
+        </button>
+        <button
+          className="undo-button"
+          type="button"
+          onClick={removeKeepAllParagraphs}
+          disabled={isChecking}
+          aria-label="Undo Keep Paragraphs Intact"
+          title="Undo Keep Paragraphs Intact"
+        >
+          {"\u21B6"}
         </button>
       </div>
 
