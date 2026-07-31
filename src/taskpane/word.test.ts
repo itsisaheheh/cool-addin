@@ -1,10 +1,16 @@
 import {
+  addKeepNextToParagraphOoxml,
   addKeepLinesToAllParagraphs,
   disableMoveToNextPage,
   enableKeepTogether,
   removeKeepLinesFromAllParagraphs,
 } from "./paragraph-format";
-import { continuationText, parseNumericHeading } from "./continuation-format";
+import {
+  continuationPlacement,
+  continuationText,
+  MAX_CONTINUATION_PAGINATION_PASSES,
+  parseNumericHeading,
+} from "./continuation-format";
 
 /* global describe, test, expect */
 
@@ -79,6 +85,68 @@ describe("continuation heading text", () => {
   });
 });
 
+describe("post-CONT'D pagination validation", () => {
+  const bodyParagraph =
+    '<w:p><w:pPr><w:jc w:val="justified"/></w:pPr><w:r><w:rPr><w:i/></w:rPr>' +
+    "<w:t>Complete paragraph text remains in one paragraph.</w:t></w:r></w:p>";
+
+  test("prepares a paragraph that is already split before CONT'D", () => {
+    expect(continuationPlacement(true, true)).toBe("prepare-and-repaginate");
+    expect(addKeepLinesToAllParagraphs(bodyParagraph).ooxml).toContain("<w:keepLines/>");
+  });
+
+  test("keeps a paragraph intact if it would split after CONT'D insertion", () => {
+    const once = addKeepLinesToAllParagraphs(bodyParagraph);
+    const twice = addKeepLinesToAllParagraphs(once.ooxml);
+    expect(once.result.paragraphsChanged).toBe(1);
+    expect(twice.result.paragraphsChanged).toBe(0);
+  });
+
+  test("places the CONT'D heading before the complete paragraph", () => {
+    const heading = addKeepNextToParagraphOoxml(
+      addKeepLinesToAllParagraphs(
+        `<w:p><w:r><w:t>${continuationText("5.3 Financial Instruments (a)")}</w:t></w:r></w:p>`
+      ).ooxml
+    );
+    const layout = `${heading}${addKeepLinesToAllParagraphs(bodyParagraph).ooxml}`;
+    expect(layout.indexOf("(Cont'd)")).toBeLessThan(layout.indexOf("Complete paragraph text"));
+    expect(heading).toContain("<w:keepNext/><w:keepLines/>");
+  });
+
+  test("does not insert a CONT'D heading inside paragraph text", () => {
+    const updated = addKeepLinesToAllParagraphs(bodyParagraph).ooxml;
+    expect(updated).toContain("<w:t>Complete paragraph text remains in one paragraph.</w:t>");
+    expect(updated).not.toContain("Cont'd");
+  });
+
+  test("supports multiple CONT'D headings without merging them", () => {
+    const headings = [continuationText("5.3 First"), continuationText("5.4 Second")];
+    expect(headings).toEqual(["5.3 First (Cont'd)", "5.4 Second (Cont'd)"]);
+  });
+
+  test("recognizes a paragraph inside a numbered section", () => {
+    expect(parseNumericHeading("5.3 Financial Instruments")).toEqual({ key: "5.3", level: 2 });
+  });
+
+  test("gracefully skips a paragraph that remains longer than a page", () => {
+    expect(continuationPlacement(true, false)).toBe("skip-overlong-paragraph");
+  });
+
+  test("preserves existing body paragraph formatting", () => {
+    const updated = addKeepLinesToAllParagraphs(bodyParagraph).ooxml;
+    expect(updated.replace("<w:keepLines/>", "")).toBe(bodyParagraph);
+  });
+
+  test("does not treat an existing CONT'D heading as a new source heading", () => {
+    expect(parseNumericHeading("5.3 Financial Instruments (Cont'd)")).toBeNull();
+  });
+
+  test("uses a bounded two-pass workflow and cannot loop indefinitely", () => {
+    expect(MAX_CONTINUATION_PAGINATION_PASSES).toBe(2);
+    expect(continuationPlacement(false, false)).toBe("before-complete-paragraph");
+  });
+});
+
 describe("Keep All Paragraphs on One Page OOXML", () => {
   test("formats multiple paragraphs across the whole document", () => {
     const original =
@@ -138,7 +206,8 @@ describe("Keep All Paragraphs on One Page OOXML", () => {
 
     const update = addKeepLinesToAllParagraphs(original);
 
-    expect(update.ooxml.replace("<w:keepLines/>", "")).toBe(original);
+    expect(update.ooxml.replace("<w:keepNext/>", "").replace("<w:keepLines/>", "")).toBe(original);
+    expect(update.ooxml).toContain("<w:keepNext/>");
   });
 
   test("does not duplicate an existing keepLines property", () => {
@@ -180,5 +249,103 @@ describe("Keep All Paragraphs on One Page OOXML", () => {
     expect(secondUpdate.result.paragraphsChanged).toBe(0);
     expect(secondUpdate.ooxml.match(/<w:keepLines\/>/g)).toHaveLength(1);
     expect(secondUpdate.ooxml).not.toContain("pageBreakBefore");
+  });
+});
+
+describe("Keep Paragraphs Intact heading pairing", () => {
+  const documentWith = (heading: string, body = "Complete body paragraph") =>
+    `<w:body>${heading}<w:p><w:r><w:t>${body}</w:t></w:r></w:p></w:body>`;
+  const paragraph = (text: string, properties = "", runProperties = "") =>
+    `<w:p>${properties}<w:r>${runProperties}<w:t>${text}</w:t></w:r></w:p>`;
+
+  test("keeps a numbered note heading with its following paragraph", () => {
+    const update = addKeepLinesToAllParagraphs(
+      documentWith(paragraph("5.4 Tax assets and liabilities"))
+    );
+
+    expect(update.ooxml).toContain(
+      "<w:keepNext/><w:keepLines/></w:pPr><w:r><w:t>5.4 Tax assets and liabilities"
+    );
+    expect(update.ooxml).toContain(
+      "<w:p><w:pPr><w:keepLines/></w:pPr><w:r><w:t>Complete body paragraph"
+    );
+  });
+
+  test("keeps a lettered subsection heading with its following paragraph", () => {
+    const update = addKeepLinesToAllParagraphs(
+      documentWith(paragraph("(f) Recognition of Gains and Losses"))
+    );
+
+    expect(update.ooxml).toContain("<w:keepNext/><w:keepLines/>");
+    expect(update.ooxml.match(/<w:keepLines\/>/g)).toHaveLength(2);
+  });
+
+  test("keeps a non-numbered report heading with its following paragraph", () => {
+    const update = addKeepLinesToAllParagraphs(documentWith(paragraph("DIRECTORS’ BENEFITS")));
+
+    expect(update.ooxml).toContain("<w:keepNext/><w:keepLines/>");
+  });
+
+  test("does not duplicate an existing keepNext property", () => {
+    const heading = paragraph(
+      "12. Inventories",
+      '<w:pPr><w:keepNext/><w:spacing w:after="120"/></w:pPr>'
+    );
+    const update = addKeepLinesToAllParagraphs(documentWith(heading));
+
+    expect(update.ooxml.match(/<w:keepNext\/>/g)).toHaveLength(1);
+  });
+
+  test("does not duplicate an existing keepLines property", () => {
+    const heading = paragraph("20. Cash and Cash Equivalents", "<w:pPr><w:keepLines/></w:pPr>");
+    const body = "<w:p><w:pPr><w:keepLines/></w:pPr><w:r><w:t>Cash details</w:t></w:r></w:p>";
+    const update = addKeepLinesToAllParagraphs(`<w:body>${heading}${body}</w:body>`);
+
+    expect(update.ooxml.match(/<w:keepLines\/>/g)).toHaveLength(2);
+  });
+
+  test("keeps heading and body text in separate paragraphs", () => {
+    const update = addKeepLinesToAllParagraphs(
+      documentWith(paragraph("(a) Initial Recognition and Measurement"))
+    );
+
+    expect(update.result.paragraphsFound).toBe(2);
+    expect(update.ooxml.match(/<w:p(?:\s[^>]*)?>/g)).toHaveLength(2);
+    expect(update.ooxml).toMatch(/Initial Recognition and Measurement<\/w:t><\/w:r><\/w:p><w:p>/);
+  });
+
+  test("does not insert a manual page break", () => {
+    const update = addKeepLinesToAllParagraphs(documentWith(paragraph("12. Inventories")));
+
+    expect(update.ooxml).not.toContain("<w:br");
+  });
+
+  test("does not insert pageBreakBefore", () => {
+    const update = addKeepLinesToAllParagraphs(documentWith(paragraph("12. Inventories")));
+
+    expect(update.ooxml).not.toContain("pageBreakBefore");
+  });
+
+  test("does not add a CONT'D heading to numbered Notes content", () => {
+    const update = addKeepLinesToAllParagraphs(
+      documentWith(paragraph("5.4 Tax assets and liabilities"))
+    );
+
+    expect(update.ooxml).not.toMatch(/CONT['’]?D|Cont['’]?d/);
+    expect(update.ooxml.match(/Tax assets and liabilities/g)).toHaveLength(1);
+  });
+
+  test("uses heading style and bold-short-text signals without changing content formatting", () => {
+    const heading = paragraph(
+      "Accounting policies",
+      '<w:pPr><w:pStyle w:val="Heading2"/><w:ind w:left="240"/></w:pPr>',
+      "<w:rPr><w:b/><w:i/></w:rPr>"
+    );
+    const update = addKeepLinesToAllParagraphs(documentWith(heading));
+
+    expect(update.ooxml).toContain('<w:pStyle w:val="Heading2"/>');
+    expect(update.ooxml).toContain('<w:ind w:left="240"/>');
+    expect(update.ooxml).toContain("<w:rPr><w:b/><w:i/></w:rPr>");
+    expect(update.ooxml).toContain("<w:keepNext/>");
   });
 });

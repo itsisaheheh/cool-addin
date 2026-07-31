@@ -21,3 +21,16 @@ export const continuationText = (headingText: string): string =>
 
 export const startsWithNumericHeading = (text: string): boolean =>
   NUMERIC_HEADING_PATTERN.test(text);
+
+export const MAX_CONTINUATION_PAGINATION_PASSES = 2;
+
+export type ContinuationPlacement =
+  "prepare-and-repaginate" | "before-complete-paragraph" | "skip-overlong-paragraph";
+
+export function continuationPlacement(
+  startsInsideParagraph: boolean,
+  preparationPass: boolean
+): ContinuationPlacement {
+  if (preparationPass) return "prepare-and-repaginate";
+  return startsInsideParagraph ? "skip-overlong-paragraph" : "before-complete-paragraph";
+}

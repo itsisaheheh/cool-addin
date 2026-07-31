@@ -86,7 +86,7 @@ const App = (): React.ReactElement => {
     try {
       const result = await keepAllParagraphsOnOnePage();
       setStatus(
-        `Success: All applicable paragraphs will now stay on the same page. Formatted ${result.paragraphsChanged} of ${result.paragraphsFound} paragraphs; ${result.paragraphsAlreadyFormatted} were already formatted. Paragraphs longer than a full page may still split in Word.`
+        `Keep Paragraphs Intact completed. Applied Keep lines together to ${result.splitParagraphsFixed} split body paragraphs and Keep with next to ${result.headingsKept} immediate lettered topic headings.`
       );
     } catch (error) {
       console.error("Word error:", error);

@@ -6,16 +6,19 @@
 /* global document, Office, Word */
 
 import {
+  addKeepNextToParagraphOoxml,
   addKeepLinesToAllParagraphs,
   disableMoveToNextPage,
   DocumentKeepLinesResult,
   enableKeepTogether,
+  formatSplitParagraphChains,
   MoveParagraphsResult,
   removeKeepLinesFromAllParagraphs,
   RemoveMoveResult,
 } from "./paragraph-format";
 import {
   continuationText,
+  continuationPlacement,
   CONTINUATION_SUFFIX_PATTERN,
   parseNumericHeading,
   startsWithNumericHeading,
@@ -53,6 +56,11 @@ export interface DocumentPaginationResult {
   paragraphs: ParagraphPageResult[];
 }
 
+export interface KeepParagraphsIntactResult extends DocumentKeepLinesResult {
+  splitParagraphsFixed: number;
+  headingsKept: number;
+}
+
 export interface ContinuationInsertionResult {
   continuingSectionsFound: number;
   continuationPagesFound: number;
@@ -79,7 +87,6 @@ interface ParagraphDetails {
 interface ContinuationPage {
   pageIndex: number;
   anchor: Word.Paragraph;
-  pageStartRange: Word.Range;
   detectedHeadings: HeadingDetails[];
   headings: HeadingDetails[];
   existingTexts: Set<string>;
@@ -162,24 +169,52 @@ export async function removeMoveFromSelectedParagraphs(): Promise<RemoveMoveResu
   });
 }
 
-export async function keepAllParagraphsOnOnePage(): Promise<DocumentKeepLinesResult> {
-  if (!Office.context.requirements.isSetSupported("WordApi", "1.1")) {
-    throw new Error("Keep All Paragraphs on One Page requires WordApi 1.1.");
+export async function keepAllParagraphsOnOnePage(): Promise<KeepParagraphsIntactResult> {
+  if (!Office.context.requirements.isSetSupported("WordApiDesktop", "1.2")) {
+    throw new Error(PAGINATION_REQUIREMENT_MESSAGE);
   }
 
   return Word.run(async (context) => {
-    const body = context.document.body;
-    const bodyOoxml = body.getOoxml();
+    const initialParagraphs = context.document.body.paragraphs;
+    initialParagraphs.load("items");
     await context.sync();
 
-    // ClientResult values become available after context.sync(); they aren't loadable ClientObjects.
-    // eslint-disable-next-line office-addins/load-object-before-read
-    const update = addKeepLinesToAllParagraphs(bodyOoxml.value);
-    if (update.result.paragraphsChanged > 0) {
-      body.insertOoxml(update.ooxml, Word.InsertLocation.replace);
-      await context.sync();
+    const totalParagraphCount = initialParagraphs.items.length;
+    const paragraphs = context.document.body.paragraphs;
+    paragraphs.load("items/text");
+    await context.sync();
+
+    const ranges = paragraphs.items.map((paragraph) =>
+      paragraph.getRange(Word.RangeLocation.whole)
+    );
+    const pageCollections = ranges.map((range) => {
+      const pages = range.pages;
+      pages.load("items/index");
+      return pages;
+    });
+    const paragraphOoxml = ranges.map((range) => range.getOoxml());
+    await context.sync();
+
+    const update = formatSplitParagraphChains(
+      paragraphs.items.map((paragraph, index) => ({
+        text: paragraph.text,
+        ooxml: paragraphOoxml[index].value,
+        pageCount: pageCollections[index].items.length,
+      }))
+    );
+
+    for (const index of [...update.changedIndices].sort((left, right) => right - left)) {
+      ranges[index].insertOoxml(update.paragraphs[index], Word.InsertLocation.replace);
     }
-    return update.result;
+    if (update.changedIndices.length > 0) await context.sync();
+
+    return {
+      paragraphsFound: totalParagraphCount,
+      paragraphsChanged: update.result.paragraphsChanged,
+      paragraphsAlreadyFormatted: update.result.paragraphsAlreadyFormatted,
+      splitParagraphsFixed: update.bodyIndices.length,
+      headingsKept: update.headingIndices.length,
+    };
   });
 }
 
@@ -248,9 +283,23 @@ export async function analyzeDocumentPagination(): Promise<DocumentPaginationRes
   });
 }
 
+interface ContinuationPassResult extends ContinuationInsertionResult {
+  requiresRepaginationPass: boolean;
+}
+
 export async function assessContinuationMarkers(
   insertContinuationHeadings: boolean
 ): Promise<ContinuationInsertionResult> {
+  const preparation = await assessContinuationMarkersPass(insertContinuationHeadings, true);
+  if (!preparation.requiresRepaginationPass) return preparation;
+
+  return assessContinuationMarkersPass(insertContinuationHeadings, false);
+}
+
+async function assessContinuationMarkersPass(
+  insertContinuationHeadings: boolean,
+  prepareAffectedParagraphs: boolean
+): Promise<ContinuationPassResult> {
   if (!Office.context.requirements.isSetSupported("WordApiDesktop", "1.2")) {
     throw new Error(PAGINATION_REQUIREMENT_MESSAGE);
   }
@@ -281,7 +330,9 @@ export async function assessContinuationMarkers(
     const insertedContinuationTags = new Set(
       contentControls.items
         .map((control) => control.tag)
-        .filter((tag) => tag.startsWith(CONTINUATION_TAG_PREFIX))
+        .filter(
+          (tag): tag is string => typeof tag === "string" && tag.startsWith(CONTINUATION_TAG_PREFIX)
+        )
     );
 
     const paragraphDetails: ParagraphDetails[] = paragraphs.items
@@ -336,7 +387,6 @@ export async function assessContinuationMarkers(
       continuationPages.push({
         pageIndex: page.index,
         anchor: firstOnPage.paragraph,
-        pageStartRange: page.getRange(Word.RangeLocation.start),
         detectedHeadings: hierarchy,
         headings: hierarchy.slice(-1),
         existingTexts: new Set(
@@ -351,6 +401,39 @@ export async function assessContinuationMarkers(
     const continuingSectionKeys = new Set<string>();
     let headingsInserted = 0;
     let duplicatesSkipped = 0;
+
+    if (prepareAffectedParagraphs && insertContinuationHeadings) {
+      const affectedParagraphs = Array.from(new Set(continuationPages.map(({ anchor }) => anchor)));
+      const affectedRanges = affectedParagraphs.map((paragraph) =>
+        paragraph.getRange(Word.RangeLocation.whole)
+      );
+      const affectedOoxml = affectedRanges.map((range) => range.getOoxml());
+      await context.sync();
+
+      let paragraphsFormatted = 0;
+      for (let index = affectedRanges.length - 1; index >= 0; index -= 1) {
+        const update = addKeepLinesToAllParagraphs(affectedOoxml[index].value);
+        if (update.result.paragraphsChanged > 0) {
+          affectedRanges[index].insertOoxml(update.ooxml, Word.InsertLocation.replace);
+          paragraphsFormatted += update.result.paragraphsChanged;
+        }
+      }
+
+      if (paragraphsFormatted > 0) await context.sync();
+      if (affectedRanges.length > 0) {
+        return {
+          continuingSectionsFound: 0,
+          continuationPagesFound: continuationPages.length,
+          headingsInserted: 0,
+          duplicatesSkipped: 0,
+          limitationMessage: "Affected paragraphs were prepared for repagination.",
+          requiresRepaginationPass: true,
+        };
+      }
+    }
+
+    const insertedHeadingParagraphs: Array<{ paragraph: Word.Paragraph; tag: string }> = [];
+    let paragraphsStillSplitAfterValidation = 0;
 
     // Work from the last rendered page toward the first so inserting at a page
     // boundary doesn't invalidate the ranges for later continuation pages.
@@ -372,9 +455,14 @@ export async function assessContinuationMarkers(
         }
         if (!insertContinuationHeadings) continue;
 
-        const inserted = continuationPage.startsInsideParagraph
-          ? continuationPage.pageStartRange.insertParagraph(text, Word.InsertLocation.before)
-          : continuationPage.anchor.insertParagraph(text, Word.InsertLocation.before);
+        if (
+          continuationPlacement(continuationPage.startsInsideParagraph, false) ===
+          "skip-overlong-paragraph"
+        ) {
+          continue;
+        }
+
+        const inserted = continuationPage.anchor.insertParagraph(text, Word.InsertLocation.before);
         inserted.style = heading.paragraph.style;
         inserted.alignment = heading.paragraph.alignment;
         inserted.firstLineIndent = heading.paragraph.firstLineIndent;
@@ -391,21 +479,50 @@ export async function assessContinuationMarkers(
           color: heading.paragraph.font.color,
         });
 
-        const control = inserted.insertContentControl();
-        control.tag = tag;
-        control.title = "Continuation heading";
-        control.appearance = Word.ContentControlAppearance.hidden;
+        insertedHeadingParagraphs.push({ paragraph: inserted, tag });
         insertedContinuationTags.add(tag);
         continuationPage.existingTexts.add(normalizedText);
         headingsInserted += 1;
       }
     }
 
-    if (headingsInserted > 0) {
+    if (insertedHeadingParagraphs.length > 0) {
       await context.sync();
+
+      const insertedRanges = insertedHeadingParagraphs.map(({ paragraph }) =>
+        paragraph.getRange(Word.RangeLocation.whole)
+      );
+      const insertedOoxml = insertedRanges.map((range) => range.getOoxml());
+      await context.sync();
+
+      for (let index = insertedRanges.length - 1; index >= 0; index -= 1) {
+        const update = addKeepLinesToAllParagraphs(insertedOoxml[index].value);
+        const headingOoxml = addKeepNextToParagraphOoxml(update.ooxml);
+        const replacement = insertedRanges[index].insertOoxml(
+          headingOoxml,
+          Word.InsertLocation.replace
+        );
+        const control = replacement.insertContentControl();
+        control.tag = insertedHeadingParagraphs[index].tag;
+        control.title = "Continuation heading";
+        control.appearance = Word.ContentControlAppearance.hidden;
+      }
+      await context.sync();
+
+      // Required post-insertion pagination validation. This is deliberately one
+      // bounded validation pass: keepLines moves paragraphs that can fit, while
+      // paragraphs longer than a page remain split without causing a loop.
+      const affectedPages = continuationPages.map(({ anchor }) => {
+        const paragraphPages = anchor.getRange().pages;
+        paragraphPages.load("items/index");
+        return paragraphPages;
+      });
       const repaginatedPages = context.document.activeWindow.activePane.pages;
       repaginatedPages.load("items/index");
       await context.sync();
+      paragraphsStillSplitAfterValidation = affectedPages.filter(
+        (paragraphPages) => paragraphPages.items.length > 1
+      ).length;
     }
 
     return {
@@ -413,8 +530,8 @@ export async function assessContinuationMarkers(
       continuationPagesFound: continuationPages.length,
       headingsInserted,
       duplicatesSkipped,
-      limitationMessage:
-        "Word repaginates dynamically after insertion. One normal continuation heading is inserted at the start of each continuation page; if the page starts inside a split paragraph, Word creates a paragraph boundary there.",
+      limitationMessage: `Word repaginated after insertion. Affected body paragraphs use Keep lines together, and continuation headings use Keep with next so a heading is followed by the complete paragraph whenever that paragraph can fit on one page. ${paragraphsStillSplitAfterValidation} affected paragraph(s) remain longer than or unable to fit on one page.`,
+      requiresRepaginationPass: false,
     };
   });
 }
@@ -432,10 +549,12 @@ export async function removeContinuationMarkers(): Promise<number> {
     await context.sync();
 
     const continuationControls = contentControls.items.filter((control) =>
-      control.tag.startsWith(CONTINUATION_TAG_PREFIX)
+      typeof control.tag === "string" ? control.tag.startsWith(CONTINUATION_TAG_PREFIX) : false
     );
     const legacyShapes = shapes.items.filter((shape) =>
-      shape.name.startsWith(`${LEGACY_MARKER_SHAPE_PREFIX}-`)
+      typeof shape.name === "string"
+        ? shape.name.startsWith(`${LEGACY_MARKER_SHAPE_PREFIX}-`)
+        : false
     );
 
     for (const control of continuationControls) control.delete(false);
