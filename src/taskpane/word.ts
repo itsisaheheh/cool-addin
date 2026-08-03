@@ -22,6 +22,7 @@ import {
   continuationPlacement,
   CONTINUATION_SUFFIX_PATTERN,
   isOrphanOriginalHeading,
+  normalizeContinuationHeadingText,
   parseNumericHeading,
   startsWithNumericHeading,
 } from "./continuation-format";
@@ -277,9 +278,6 @@ export async function removeKeepAllParagraphsTogether(): Promise<DocumentKeepLin
   });
 }
 
-const normalizeHeadingText = (text: string): string =>
-  text.replace(/\s+/g, " ").trim().toLocaleLowerCase();
-
 const updateHierarchy = (
   hierarchy: Array<HeadingDetails | undefined>,
   heading: HeadingDetails
@@ -404,7 +402,6 @@ async function assessContinuationMarkersPass(
   return Word.run(async (context) => {
     const paragraphs = context.document.body.paragraphs;
     const pages = context.document.activeWindow.activePane.pages;
-    const contentControls = context.document.body.contentControls;
 
     paragraphs.load(
       "items/text,items/style,items/styleBuiltIn,items/outlineLevel,items/isListItem," +
@@ -412,7 +409,6 @@ async function assessContinuationMarkersPass(
         "items/lineSpacing,items/spaceBefore,items/spaceAfter"
     );
     pages.load("items/index");
-    contentControls.load("items/tag");
     await context.sync();
     const pageCountBefore = pages.items.length;
 
@@ -431,14 +427,6 @@ async function assessContinuationMarkersPass(
       return startPages;
     });
     await context.sync();
-
-    const insertedContinuationTags = new Set(
-      contentControls.items
-        .map((control) => control.tag)
-        .filter(
-          (tag): tag is string => typeof tag === "string" && tag.startsWith(CONTINUATION_TAG_PREFIX)
-        )
-    );
 
     const paragraphDetails: ParagraphDetails[] = paragraphs.items
       .map((paragraph, index) => {
@@ -607,7 +595,7 @@ async function assessContinuationMarkersPass(
         existingTexts: new Set(
           paragraphDetails
             .filter((details) => details.pages.includes(page.index))
-            .map((details) => normalizeHeadingText(details.text))
+            .map((details) => normalizeContinuationHeadingText(details.text))
         ),
         startsInsideParagraph: eligibility === "prepare",
       });
@@ -674,13 +662,10 @@ async function assessContinuationMarkersPass(
       }
       for (const heading of continuationPage.headings) {
         const text = continuationText(heading.text, heading.level === 1);
-        const normalizedText = normalizeHeadingText(text);
+        const normalizedText = normalizeContinuationHeadingText(text);
         const tag = `${CONTINUATION_TAG_PREFIX}${continuationPage.pageIndex}:${heading.key}`;
 
-        if (
-          continuationPage.existingTexts.has(normalizedText) ||
-          insertedContinuationTags.has(tag)
-        ) {
+        if (continuationPage.existingTexts.has(normalizedText)) {
           duplicatesSkipped += 1;
           logContdDiagnostic({
             pass: diagnosticPass,
@@ -698,10 +683,11 @@ async function assessContinuationMarkersPass(
         if (!insertContinuationHeadings) continue;
 
         const placement = continuationPlacement(continuationPage.startsInsideParagraph, false);
-        const inserted =
-          placement === "at-rendered-page-start"
-            ? continuationPage.pageStartRange.insertParagraph(text, Word.InsertLocation.before)
-            : continuationPage.anchor.insertParagraph(text, Word.InsertLocation.before);
+        const insertAtRenderedPageStart =
+          heading.level === 1 || placement === "at-rendered-page-start";
+        const inserted = insertAtRenderedPageStart
+          ? continuationPage.pageStartRange.insertParagraph(text, Word.InsertLocation.before)
+          : continuationPage.anchor.insertParagraph(text, Word.InsertLocation.before);
         inserted.style = heading.paragraph.style;
         inserted.alignment = heading.paragraph.alignment;
         inserted.firstLineIndent = heading.paragraph.firstLineIndent;
@@ -719,7 +705,6 @@ async function assessContinuationMarkersPass(
         });
 
         insertedHeadingParagraphs.push({ paragraph: inserted, tag, continuationPage });
-        insertedContinuationTags.add(tag);
         continuationPage.existingTexts.add(normalizedText);
         headingsInserted += 1;
         logContdDiagnostic({

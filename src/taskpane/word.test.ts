@@ -11,6 +11,7 @@ import {
   continuationText,
   isOrphanOriginalHeading,
   MAX_CONTINUATION_PAGINATION_PASSES,
+  normalizeContinuationHeadingText,
   parseNumericHeading,
 } from "./continuation-format";
 
@@ -102,6 +103,29 @@ describe("continuation heading text", () => {
       "5. SIGNIFICANT ACCOUNTING POLICIES (CONT'D)",
       "5.2 Financial Instruments (Cont'd)",
     ]);
+  });
+
+  test("adds one parent when the continuation page previously had none", () => {
+    const parent = "5. SIGNIFICANT ACCOUNTING POLICIES (CONT'D)";
+    const pageHeadings = ["5.2 Financial Instruments (Cont'd)"];
+    const existing = new Set(pageHeadings.map(normalizeContinuationHeadingText));
+
+    if (!existing.has(normalizeContinuationHeadingText(parent))) pageHeadings.unshift(parent);
+
+    expect(pageHeadings.filter((text) => text.startsWith("5. SIGNIFICANT"))).toHaveLength(1);
+  });
+
+  test("does not duplicate a parent already present with a curly apostrophe", () => {
+    const parent = "5. SIGNIFICANT ACCOUNTING POLICIES (CONT'D)";
+    const pageHeadings = [
+      "5. SIGNIFICANT ACCOUNTING POLICIES (CONT’D)",
+      "5.2 Financial Instruments (Cont'd)",
+    ];
+    const existing = new Set(pageHeadings.map(normalizeContinuationHeadingText));
+
+    if (!existing.has(normalizeContinuationHeadingText(parent))) pageHeadings.unshift(parent);
+
+    expect(pageHeadings.filter((text) => text.startsWith("5. SIGNIFICANT"))).toHaveLength(1);
   });
 
   test.each([
@@ -227,6 +251,16 @@ describe("post-CONT'D pagination validation", () => {
 
   test("uses the rendered page start when a paragraph still spans the continuation page", () => {
     expect(continuationPlacement(true, false)).toBe("at-rendered-page-start");
+  });
+
+  test("forces a parent continuation to the rendered page start before complete content", () => {
+    const existingPlacement = continuationPlacement(false, false);
+    const headingLevel = 1;
+    const insertParentAtRenderedPageStart =
+      headingLevel === 1 || existingPlacement === "at-rendered-page-start";
+
+    expect(existingPlacement).toBe("before-complete-paragraph");
+    expect(insertParentAtRenderedPageStart).toBe(true);
   });
 
   test("preserves existing body paragraph formatting", () => {

@@ -4,6 +4,9 @@ const NUMERIC_HEADING_PATTERN = /^(\d+(?:\.\d+)*)(?:\.)?(?:\s+|$)/;
 
 export const CONTINUATION_SUFFIX_PATTERN = /\s+\(Cont['’]d\)\s*$/i;
 
+export const normalizeContinuationHeadingText = (text: string): string =>
+  text.replace(/[’']/g, "'").replace(/\s+/g, " ").trim().toLocaleLowerCase();
+
 export function parseNumericHeading(text: string): { key: string; level: number } | null {
   const trimmed = text.trim();
   if (CONTINUATION_SUFFIX_PATTERN.test(trimmed) || /^\([a-zivxlcdm]+\)/i.test(trimmed)) {
