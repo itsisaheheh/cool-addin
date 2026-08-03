@@ -86,6 +86,24 @@ describe("continuation heading text", () => {
     expect(continuationText("1.1 Scope")).toBe("1.1 Scope (Cont'd)");
   });
 
+  test("uses the report's uppercase CONT'D suffix for a main heading", () => {
+    expect(continuationText("5. SIGNIFICANT ACCOUNTING POLICIES", true)).toBe(
+      "5. SIGNIFICANT ACCOUNTING POLICIES (CONT'D)"
+    );
+  });
+
+  test("keeps parent and subsection continuation headings in display order", () => {
+    const hierarchy = [
+      continuationText("5. SIGNIFICANT ACCOUNTING POLICIES", true),
+      continuationText("5.2 Financial Instruments"),
+    ];
+
+    expect(hierarchy).toEqual([
+      "5. SIGNIFICANT ACCOUNTING POLICIES (CONT'D)",
+      "5.2 Financial Instruments (Cont'd)",
+    ]);
+  });
+
   test.each([
     ["1", "1", 1],
     ["1.1 Basis of Preparation", "1.1", 2],

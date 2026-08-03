@@ -600,7 +600,10 @@ async function assessContinuationMarkersPass(
         anchorText: firstOnPage.text,
         anchor: firstOnPage.paragraph,
         detectedHeadings: hierarchy,
-        headings: hierarchy.slice(-1),
+        // Retain the complete parent-to-child hierarchy. The insertion loop
+        // adds one missing heading per stabilization pass so Word can
+        // repaginate between additions while preserving their order.
+        headings: hierarchy,
         existingTexts: new Set(
           paragraphDetails
             .filter((details) => details.pages.includes(page.index))
@@ -670,7 +673,7 @@ async function assessContinuationMarkersPass(
         continuingSectionKeys.add(heading.key);
       }
       for (const heading of continuationPage.headings) {
-        const text = continuationText(heading.text);
+        const text = continuationText(heading.text, heading.level === 1);
         const normalizedText = normalizeHeadingText(text);
         const tag = `${CONTINUATION_TAG_PREFIX}${continuationPage.pageIndex}:${heading.key}`;
 

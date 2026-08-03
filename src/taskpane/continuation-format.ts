@@ -1,4 +1,5 @@
 const CONTINUATION_SUFFIX = " (Cont'd)";
+const MAIN_CONTINUATION_SUFFIX = " (CONT'D)";
 const NUMERIC_HEADING_PATTERN = /^(\d+(?:\.\d+)*)(?:\.)?(?:\s+|$)/;
 
 export const CONTINUATION_SUFFIX_PATTERN = /\s+\(Cont['’]d\)\s*$/i;
@@ -16,8 +17,8 @@ export function parseNumericHeading(text: string): { key: string; level: number 
   return { key, level: key.split(".").length };
 }
 
-export const continuationText = (headingText: string): string =>
-  `${headingText.trim()}${CONTINUATION_SUFFIX}`;
+export const continuationText = (headingText: string, isMainHeading = false): string =>
+  `${headingText.trim()}${isMainHeading ? MAIN_CONTINUATION_SUFFIX : CONTINUATION_SUFFIX}`;
 
 export const startsWithNumericHeading = (text: string): boolean =>
   NUMERIC_HEADING_PATTERN.test(text);
