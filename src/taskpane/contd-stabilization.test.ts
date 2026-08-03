@@ -48,6 +48,19 @@ describe("Add CONT'D Headings full-document stabilization", () => {
     expect(result.passesCompleted).toBe(1);
   });
 
+  test("rescans after a continuation pass changes pagination without inserting a heading", async () => {
+    const runPass = jest
+      .fn<Promise<ReturnType<typeof passResult> & { paginationChanged?: boolean }>, [number]>()
+      .mockResolvedValueOnce({ ...passResult(0), paginationChanged: true })
+      .mockResolvedValueOnce(passResult(0));
+
+    const result = await runContdInsertionUntilStable(4, runPass);
+
+    expect(runPass).toHaveBeenCalledTimes(2);
+    expect(result.passesCompleted).toBe(2);
+    expect(result.reachedSafetyLimit).toBe(false);
+  });
+
   test("preserves duplicate-prevention results without retrying duplicates", async () => {
     const runPass = jest.fn().mockResolvedValue(passResult(0, 2));
 

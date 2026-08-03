@@ -4,6 +4,7 @@ export interface ContdPassResult {
   headingsInserted: number;
   duplicatesSkipped: number;
   limitationMessage: string;
+  paginationChanged?: boolean;
 }
 
 export interface ContdStabilizationResult extends ContdPassResult {
@@ -33,7 +34,7 @@ export async function runContdInsertionUntilStable(
     duplicatesSkipped = Math.max(duplicatesSkipped, result.duplicatesSkipped);
     limitationMessage = result.limitationMessage;
 
-    if (result.headingsInserted === 0) {
+    if (result.headingsInserted === 0 && !result.paginationChanged) {
       reachedSafetyLimit = false;
       break;
     }

@@ -72,6 +72,7 @@ export interface ContinuationInsertionResult {
   headingsInserted: number;
   duplicatesSkipped: number;
   limitationMessage: string;
+  paginationChanged?: boolean;
 }
 
 export interface DocumentCheckResult {
@@ -380,7 +381,15 @@ export async function assessContinuationMarkers(
   );
   if (!preparation.requiresRepaginationPass) return preparation;
 
-  return assessContinuationMarkersPass(insertContinuationHeadings, false, diagnosticPass);
+  const repaginated = await assessContinuationMarkersPass(
+    insertContinuationHeadings,
+    false,
+    diagnosticPass
+  );
+  return {
+    ...repaginated,
+    paginationChanged: preparation.paginationChanged || repaginated.paginationChanged,
+  };
 }
 
 async function assessContinuationMarkersPass(
@@ -517,6 +526,7 @@ async function assessContinuationMarkersPass(
           duplicatesSkipped: 0,
           limitationMessage:
             "Moved an orphan original heading with its first content paragraph and repaginated.",
+          paginationChanged: true,
           requiresRepaginationPass: true,
         };
       }
@@ -640,6 +650,7 @@ async function assessContinuationMarkersPass(
           headingsInserted: 0,
           duplicatesSkipped: 0,
           limitationMessage: "Affected paragraphs were prepared for repagination.",
+          paginationChanged: update.result.paragraphsChanged > 0,
           requiresRepaginationPass: true,
         };
       }
