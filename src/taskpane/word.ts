@@ -534,20 +534,47 @@ async function assessContinuationMarkersPass(
       if (details.heading) updateHierarchy(activeHierarchy, details.heading);
     }
 
+    const originalParagraphsByPage = new Map<number, ParagraphDetails[]>();
+    const firstOriginalParagraphStartingOnPage = new Map<number, ParagraphDetails>();
+    const existingTextsByPage = new Map<number, Set<string>>();
+
+    for (const details of originalParagraphs) {
+      if (
+        details.startPage !== null &&
+        !firstOriginalParagraphStartingOnPage.has(details.startPage)
+      ) {
+        firstOriginalParagraphStartingOnPage.set(details.startPage, details);
+      }
+
+      for (const pageIndex of details.pages) {
+        const paragraphsOnPage = originalParagraphsByPage.get(pageIndex);
+        if (paragraphsOnPage) {
+          paragraphsOnPage.push(details);
+        } else {
+          originalParagraphsByPage.set(pageIndex, [details]);
+        }
+      }
+    }
+
+    for (const details of paragraphDetails) {
+      const normalizedText = normalizeContinuationHeadingText(details.text);
+      for (const pageIndex of details.pages) {
+        const existingTexts = existingTextsByPage.get(pageIndex);
+        if (existingTexts) {
+          existingTexts.add(normalizedText);
+        } else {
+          existingTextsByPage.set(pageIndex, new Set([normalizedText]));
+        }
+      }
+    }
+
     const continuationPages: ContinuationPage[] = [];
     for (const page of pages.items.slice(1)) {
-      const paragraphsOnPage = originalParagraphs.filter((details) =>
-        details.pages.includes(page.index)
-      );
+      const paragraphsOnPage = originalParagraphsByPage.get(page.index) ?? [];
       const paragraphSpanningIntoPage = paragraphsOnPage.find(
-        (details) =>
-          details.startPage !== null &&
-          details.startPage < page.index &&
-          details.pages.includes(page.index)
+        (details) => details.startPage !== null && details.startPage < page.index
       );
-      const firstStartingOnPage = originalParagraphs.find(
-        (details) => details.startPage === page.index
-      );
+      const firstStartingOnPage = firstOriginalParagraphStartingOnPage.get(page.index);
       const firstOnPage = paragraphSpanningIntoPage ?? firstStartingOnPage;
       if (!firstOnPage) continue;
       if (unresolvedOrphanContent.has(firstOnPage.paragraph)) {
@@ -592,11 +619,7 @@ async function assessContinuationMarkersPass(
         // adds one missing heading per stabilization pass so Word can
         // repaginate between additions while preserving their order.
         headings: hierarchy,
-        existingTexts: new Set(
-          paragraphDetails
-            .filter((details) => details.pages.includes(page.index))
-            .map((details) => normalizeContinuationHeadingText(details.text))
-        ),
+        existingTexts: new Set(existingTextsByPage.get(page.index) ?? []),
         startsInsideParagraph: eligibility === "prepare",
       });
     }
@@ -661,6 +684,9 @@ async function assessContinuationMarkersPass(
         continuingSectionKeys.add(heading.key);
       }
       for (const heading of continuationPage.headings) {
+        // Final guard against stale or non-heading content being carried into
+        // the saved hierarchy before a continuation suffix is added.
+        if (!parseNumericHeading(heading.text)) continue;
         const text = continuationText(heading.text, heading.level === 1);
         const normalizedText = normalizeContinuationHeadingText(text);
         const tag = `${CONTINUATION_TAG_PREFIX}${continuationPage.pageIndex}:${heading.key}`;

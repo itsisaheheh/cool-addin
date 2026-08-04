@@ -1,6 +1,9 @@
 const CONTINUATION_SUFFIX = " (Cont'd)";
 const MAIN_CONTINUATION_SUFFIX = " (CONT'D)";
-const NUMERIC_HEADING_PATTERN = /^(\d+(?:\.\d+)*)(?:\.)?(?:\s+|$)/;
+const NUMERIC_HEADING_PATTERN = /^(?:(\d+)\.\s+\S.*|(\d+\.\d+)\s+\S.*)$/;
+
+const normalizeHeadingWhitespace = (text: string): string =>
+  text.normalize("NFKC").replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
 
 export const CONTINUATION_SUFFIX_PATTERN = /\s+\(Cont['’]d\)\s*$/i;
 
@@ -8,7 +11,7 @@ export const normalizeContinuationHeadingText = (text: string): string =>
   text.replace(/[’']/g, "'").replace(/\s+/g, " ").trim().toLocaleLowerCase();
 
 export function parseNumericHeading(text: string): { key: string; level: number } | null {
-  const trimmed = text.trim();
+  const trimmed = normalizeHeadingWhitespace(text);
   if (CONTINUATION_SUFFIX_PATTERN.test(trimmed) || /^\([a-zivxlcdm]+\)/i.test(trimmed)) {
     return null;
   }
@@ -16,7 +19,7 @@ export function parseNumericHeading(text: string): { key: string; level: number 
   const match = trimmed.match(NUMERIC_HEADING_PATTERN);
   if (!match) return null;
 
-  const key = match[1];
+  const key = match[1] ?? match[2];
   return { key, level: key.split(".").length };
 }
 
@@ -24,7 +27,7 @@ export const continuationText = (headingText: string, isMainHeading = false): st
   `${headingText.trim()}${isMainHeading ? MAIN_CONTINUATION_SUFFIX : CONTINUATION_SUFFIX}`;
 
 export const startsWithNumericHeading = (text: string): boolean =>
-  NUMERIC_HEADING_PATTERN.test(text);
+  NUMERIC_HEADING_PATTERN.test(normalizeHeadingWhitespace(text));
 
 export const MAX_CONTINUATION_PAGINATION_PASSES = 2;
 

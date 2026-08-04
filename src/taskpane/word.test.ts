@@ -93,6 +93,29 @@ describe("continuation heading text", () => {
     );
   });
 
+  test("accepts only valid main and sub-note headings", () => {
+    expect(parseNumericHeading("5.3\u00a0 Financial   Instruments")).toEqual({
+      key: "5.3",
+      level: 2,
+    });
+    expect(parseNumericHeading("5. SIGNIFICANT ACCOUNTING POLICIES")).toEqual({
+      key: "5",
+      level: 1,
+    });
+    expect(parseNumericHeading("5 years")).toBeNull();
+  });
+
+  test("table content cannot replace the latest valid note heading", () => {
+    const savedHeading = ["5.3 Financial Instruments", "5 years"].reduce(
+      (latest, text) => (parseNumericHeading(text) ? text : latest),
+      ""
+    );
+
+    expect(savedHeading).toBe("5.3 Financial Instruments");
+    expect(continuationText(savedHeading, true)).toBe("5.3 Financial Instruments (CONT'D)");
+    expect(continuationText(savedHeading, true)).not.toContain("5 years");
+  });
+
   test("keeps parent and subsection continuation headings in display order", () => {
     const hierarchy = [
       continuationText("5. SIGNIFICANT ACCOUNTING POLICIES", true),
@@ -128,16 +151,10 @@ describe("continuation heading text", () => {
     expect(pageHeadings.filter((text) => text.startsWith("5. SIGNIFICANT"))).toHaveLength(1);
   });
 
-  test.each([
-    ["1", "1", 1],
-    ["1.1 Basis of Preparation", "1.1", 2],
-    ["7.2.1 Detailed Policy", "7.2.1", 3],
-    ["10 BORROWINGS", "10", 1],
-    ["20.3 Related Party Balances", "20.3", 2],
-    ["40.1 Other Information", "40.1", 2],
-  ])("recognizes generic numbered report heading %s", (text, key, level) => {
-    expect(parseNumericHeading(text as string)).toEqual({ key, level });
-  });
+  test.each(["10 years", "2025", "5%", "4,004", "RM 5", "Machinery Straight-line 5 years"])(
+    "rejects non-heading content %s",
+    (text) => expect(parseNumericHeading(text)).toBeNull()
+  );
 });
 
 describe("post-CONT'D pagination validation", () => {
