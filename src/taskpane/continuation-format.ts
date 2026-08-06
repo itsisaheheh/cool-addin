@@ -27,6 +27,18 @@ export function parseNumericHeading(text: string): { key: string; level: number 
   return { key, level: key.split(".").length };
 }
 
+export function parseParagraphNumericHeading(
+  text: string,
+  listPrefix = ""
+): { key: string; level: number } | null {
+  const normalizedText = normalizeHeadingWhitespace(text);
+  const normalizedListPrefix = normalizeHeadingWhitespace(listPrefix);
+  return (
+    parseNumericHeading(normalizedText) ??
+    parseNumericHeading(`${normalizedListPrefix} ${normalizedText}`.trim())
+  );
+}
+
 export const continuationText = (headingText: string, isMainHeading = false): string =>
   `${headingText.trim()}${isMainHeading ? MAIN_CONTINUATION_SUFFIX : CONTINUATION_SUFFIX}`;
 
@@ -46,6 +58,17 @@ export function continuationPlacement(
   return startsInsideParagraph ? "at-rendered-page-start" : "before-complete-paragraph";
 }
 
+export type ContinuationInsertionAnchor =
+  "before-paragraph-anchor" | "rendered-page-start" | "after-valid-prefix";
+
+export function continuationInsertionAnchor(
+  startsInsideParagraph: boolean,
+  hasValidPageTopPrefix: boolean
+): ContinuationInsertionAnchor {
+  if (!startsInsideParagraph) return "before-paragraph-anchor";
+  return hasValidPageTopPrefix ? "after-valid-prefix" : "rendered-page-start";
+}
+
 export type ContinuationPageEligibility = "prepare" | "insert" | "skip";
 
 export function pageRequiresContinuation(options: {
@@ -53,6 +76,27 @@ export function pageRequiresContinuation(options: {
   pageBeginsWithOriginalHeading: boolean;
 }): boolean {
   return options.activeNoteStartedEarlier && !options.pageBeginsWithOriginalHeading;
+}
+
+export function activeHierarchyAtRenderedPageTop<T>(
+  activeHierarchyBeforeFirstContent: T[],
+  firstContentIsNumberedHeading: boolean
+): T[] {
+  return pageRequiresContinuation({
+    activeNoteStartedEarlier: activeHierarchyBeforeFirstContent.length > 0,
+    pageBeginsWithOriginalHeading: firstContentIsNumberedHeading,
+  })
+    ? [...activeHierarchyBeforeFirstContent]
+    : [];
+}
+
+export function firstRenderedContentOnPage<T extends { documentIndex: number; pages: number[] }>(
+  paragraphs: T[],
+  pageIndex: number
+): T | undefined {
+  return paragraphs
+    .filter((paragraph) => paragraph.pages.includes(pageIndex))
+    .sort((left, right) => left.documentIndex - right.documentIndex)[0];
 }
 
 export function validateContinuationPageTop(options: {

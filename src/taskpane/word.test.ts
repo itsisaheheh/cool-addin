@@ -6,13 +6,17 @@ import {
   removeKeepLinesFromAllParagraphs,
 } from "./paragraph-format";
 import {
+  activeHierarchyAtRenderedPageTop,
+  firstRenderedContentOnPage,
   continuationPageEligibility,
+  continuationInsertionAnchor,
   continuationPlacement,
   continuationText,
   isOrphanOriginalHeading,
   MAX_CONTINUATION_PAGINATION_PASSES,
   normalizeContinuationHeadingText,
   pageRequiresContinuation,
+  parseParagraphNumericHeading,
   parseNumericHeading,
   validateContinuationPageTop,
 } from "./continuation-format";
@@ -298,6 +302,100 @@ describe("post-CONT'D pagination validation", () => {
 });
 
 describe("page-based continuation rule", () => {
+  test("recognizes a Word list-numbered 5.4 heading and retains it in the active hierarchy", () => {
+    const main = parseNumericHeading("5. SIGNIFICANT ACCOUNTING POLICIES");
+    const tax = parseParagraphNumericHeading("Tax assets and liabilities", "5.4");
+    expect(tax).toEqual({ key: "5.4", level: 2 });
+
+    const activeHierarchy = [main, tax].filter(
+      (heading): heading is { key: string; level: number } => heading !== null
+    );
+    expect(activeHierarchy.map((heading) => heading.key)).toEqual(["5", "5.4"]);
+  });
+
+  test("classifies continued 5.4 body text before a later 5.5 heading from the page top", () => {
+    const activeHierarchy = [
+      parseNumericHeading("5. SIGNIFICANT ACCOUNTING POLICIES"),
+      parseParagraphNumericHeading("Tax assets and liabilities", "5.4"),
+    ].filter((heading): heading is { key: string; level: number } => heading !== null);
+    const firstRenderedContent = parseParagraphNumericHeading("continued tax-assets body text", "");
+    const laterHeading = parseParagraphNumericHeading("Borrowing costs", "5.5");
+
+    const hierarchyAtPageTop = activeHierarchyAtRenderedPageTop(
+      activeHierarchy,
+      firstRenderedContent !== null
+    );
+
+    expect(laterHeading).toEqual({ key: "5.5", level: 2 });
+    expect(hierarchyAtPageTop.map((heading) => heading.key)).toEqual(["5", "5.4"]);
+    expect(
+      hierarchyAtPageTop.map((heading) =>
+        continuationText(
+          heading.key === "5"
+            ? "5. SIGNIFICANT ACCOUNTING POLICIES"
+            : "5.4 Tax assets and liabilities",
+          heading.level === 1
+        )
+      )
+    ).toEqual([
+      "5. SIGNIFICANT ACCOUNTING POLICIES (CONT'D)",
+      "5.4 Tax assets and liabilities (Cont'd)",
+    ]);
+  });
+
+  test("selects the earliest rendered 5.4 body content instead of a later heading", () => {
+    const pageIndex = 8;
+    const first = firstRenderedContentOnPage(
+      [
+        { documentIndex: 42, pages: [pageIndex], text: "continued 5.4 body text" },
+        { documentIndex: 43, pages: [pageIndex], text: "more 5.4 body text" },
+        { documentIndex: 44, pages: [pageIndex], text: "5.5 Borrowing costs" },
+      ],
+      pageIndex
+    );
+
+    expect(first).toMatchObject({
+      documentIndex: 42,
+      text: "continued 5.4 body text",
+    });
+  });
+
+  test("does not let a later spanning paragraph replace earlier rendered page-top content", () => {
+    const pageIndex = 8;
+    const first = firstRenderedContentOnPage(
+      [
+        { documentIndex: 42, pages: [pageIndex], text: "continued 5.4 body text" },
+        { documentIndex: 44, pages: [7, pageIndex], text: "later rendered content" },
+      ],
+      pageIndex
+    );
+
+    expect(first?.documentIndex).toBe(42);
+  });
+
+  test("uses the same page-top continuation decision for starting and spanning body paragraphs", () => {
+    const activeHierarchy = [
+      { key: "5", level: 1 },
+      { key: "5.4", level: 2 },
+    ];
+    const startingOnPage = activeHierarchyAtRenderedPageTop(activeHierarchy, false);
+    const spanningFromPreviousPage = activeHierarchyAtRenderedPageTop(activeHierarchy, false);
+    expect(startingOnPage).toEqual(spanningFromPreviousPage);
+    expect(startingOnPage.map((heading) => heading.key)).toEqual(["5", "5.4"]);
+  });
+
+  test("uses rendered page start for the first heading above spanning body content", () => {
+    expect(continuationInsertionAnchor(true, false)).toBe("rendered-page-start");
+  });
+
+  test("adds the sub-note after an existing valid main-heading prefix", () => {
+    expect(continuationInsertionAnchor(true, true)).toBe("after-valid-prefix");
+  });
+
+  test("keeps clean page starts on the existing paragraph anchor path", () => {
+    expect(continuationInsertionAnchor(false, false)).toBe("before-paragraph-anchor");
+  });
+
   test("requires CONT'D for clean and split continuation-page starts alike", () => {
     const pageState = {
       activeNoteStartedEarlier: true,

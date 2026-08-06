@@ -18,11 +18,14 @@ import {
 } from "./paragraph-format";
 import {
   continuationText,
+  continuationInsertionAnchor,
   continuationPlacement,
   CONTINUATION_SUFFIX_PATTERN,
+  activeHierarchyAtRenderedPageTop,
+  firstRenderedContentOnPage,
   isOrphanOriginalHeading,
   normalizeContinuationHeadingText,
-  pageRequiresContinuation,
+  parseParagraphNumericHeading,
   parseNumericHeading,
   startsWithNumericHeading,
   validateContinuationPageTop,
@@ -108,6 +111,7 @@ interface ParagraphDetails {
 
 interface ContinuationPage {
   pageIndex: number;
+  page: Word.Page;
   anchorIndex: number;
   anchorText: string;
   anchor: Word.Paragraph;
@@ -115,6 +119,7 @@ interface ContinuationPage {
   headings: HeadingDetails[];
   existingTexts: Set<string>;
   startsInsideParagraph: boolean;
+  lastValidPrefixHeading: Word.Paragraph | null;
   misplacedHeading: Word.Paragraph | null;
 }
 
@@ -437,7 +442,7 @@ async function assessContinuationMarkersPass(
         const text = paragraph.text.trim();
         const listItem = paragraph.listItemOrNullObject;
         const listPrefix = !listItem.isNullObject ? listItem.listString.trim() : "";
-        const numeric = parseNumericHeading(text) ?? parseNumericHeading(`${listPrefix} `);
+        const numeric = parseParagraphNumericHeading(text, listPrefix);
         const fullHeadingText =
           numeric && listPrefix && !startsWithNumericHeading(text) ? `${listPrefix} ${text}` : text;
         const startPage = paragraphStartPageCollections[index].items[0]?.index ?? null;
@@ -560,16 +565,8 @@ async function assessContinuationMarkersPass(
     }
 
     const originalParagraphsByPage = new Map<number, ParagraphDetails[]>();
-    const firstOriginalParagraphStartingOnPage = new Map<number, ParagraphDetails>();
 
     for (const details of originalParagraphs) {
-      if (
-        details.startPage !== null &&
-        !firstOriginalParagraphStartingOnPage.has(details.startPage)
-      ) {
-        firstOriginalParagraphStartingOnPage.set(details.startPage, details);
-      }
-
       for (const pageIndex of details.pages) {
         const paragraphsOnPage = originalParagraphsByPage.get(pageIndex);
         if (paragraphsOnPage) {
@@ -586,11 +583,7 @@ async function assessContinuationMarkersPass(
       const page = pages.items.find((candidate) => candidate.index === pageIndex);
       if (!page) continue;
       const paragraphsOnPage = originalParagraphsByPage.get(page.index) ?? [];
-      const paragraphSpanningIntoPage = paragraphsOnPage.find(
-        (details) => details.startPage !== null && details.startPage < page.index
-      );
-      const firstStartingOnPage = firstOriginalParagraphStartingOnPage.get(page.index);
-      const firstOnPage = paragraphSpanningIntoPage ?? firstStartingOnPage;
+      const firstOnPage = firstRenderedContentOnPage(paragraphsOnPage, page.index);
       if (!firstOnPage) continue;
       if (firstOnPage.isInTable) {
         unsafeContinuationPages.push(page.index);
@@ -607,34 +600,14 @@ async function assessContinuationMarkersPass(
         continue;
       }
 
-      const startedEarlier = paragraphSpanningIntoPage === firstOnPage;
-      const hierarchy = [...(hierarchyBeforeParagraph.get(firstOnPage.paragraph) ?? [])].filter(
-        (heading) => heading.startPage !== null && heading.startPage < page.index
+      const startedEarlier = firstOnPage.startPage !== null && firstOnPage.startPage < page.index;
+      const hierarchy = activeHierarchyAtRenderedPageTop(
+        [...(hierarchyBeforeParagraph.get(firstOnPage.paragraph) ?? [])].filter(
+          (heading) => heading.startPage !== null && heading.startPage < page.index
+        ),
+        firstOnPage.heading !== null
       );
       if (hierarchy.length === 0) continue;
-      if (
-        !pageRequiresContinuation({
-          activeNoteStartedEarlier: hierarchy.length > 0,
-          pageBeginsWithOriginalHeading: !startedEarlier && firstOnPage.heading !== null,
-        })
-      ) {
-        continue;
-      }
-      if (startedEarlier && !prepareAffectedParagraphs) {
-        unsafeContinuationPages.push(page.index);
-        logContdDiagnostic({
-          pass: diagnosticPass,
-          phase: "candidate",
-          candidatePage: page.index,
-          candidateParagraphIndex: firstOnPage.documentIndex,
-          insertionTargetText: firstOnPage.text,
-          paginationChanged: false,
-          reason:
-            "The first Notes content still spans from the previous page after safe preparation; the page was skipped instead of inserting inside the paragraph.",
-        });
-        continue;
-      }
-
       const requiredHeadingTexts = hierarchy.map((heading) =>
         normalizeContinuationHeadingText(continuationText(heading.text, heading.level === 1))
       );
@@ -663,6 +636,7 @@ async function assessContinuationMarkersPass(
 
       continuationPages.push({
         pageIndex: page.index,
+        page,
         anchorIndex: firstOnPage.documentIndex,
         anchorText: firstOnPage.text,
         anchor: firstOnPage.paragraph,
@@ -673,6 +647,11 @@ async function assessContinuationMarkersPass(
         headings: hierarchy,
         existingTexts: new Set(pageTopValidation.validPrefixTexts),
         startsInsideParagraph: startedEarlier,
+        lastValidPrefixHeading:
+          pageTopValidation.validPrefixTexts.length > 0
+            ? (existingRequiredHeadings[pageTopValidation.validPrefixTexts.length - 1]?.paragraph ??
+              null)
+            : null,
         misplacedHeading: misplacedHeadingDetails?.paragraph ?? null,
       });
     }
@@ -790,7 +769,21 @@ async function assessContinuationMarkersPass(
         if (!insertContinuationHeadings) continue;
 
         const placement = continuationPlacement(continuationPage.startsInsideParagraph, false);
-        const inserted = continuationPage.anchor.insertParagraph(text, Word.InsertLocation.before);
+        const insertionAnchor = continuationInsertionAnchor(
+          continuationPage.startsInsideParagraph,
+          continuationPage.lastValidPrefixHeading !== null
+        );
+        const inserted =
+          insertionAnchor === "rendered-page-start"
+            ? continuationPage.page
+                .getRange(Word.RangeLocation.start)
+                .insertParagraph(text, Word.InsertLocation.before)
+            : insertionAnchor === "after-valid-prefix"
+              ? continuationPage.lastValidPrefixHeading!.insertParagraph(
+                  text,
+                  Word.InsertLocation.after
+                )
+              : continuationPage.anchor.insertParagraph(text, Word.InsertLocation.before);
         inserted.style = heading.paragraph.style;
         inserted.alignment = heading.paragraph.alignment;
         inserted.firstLineIndent = heading.paragraph.firstLineIndent;
@@ -819,7 +812,7 @@ async function assessContinuationMarkersPass(
           candidateParagraphIndex: continuationPage.anchorIndex,
           insertionTargetText: continuationPage.anchorText,
           paginationChanged: false,
-          reason: `Inserting at the freshly loaded rendered page start (${placement}).`,
+          reason: `Inserting at the freshly loaded ${insertionAnchor} (${placement}).`,
         });
         break;
       }
