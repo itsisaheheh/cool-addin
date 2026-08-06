@@ -12,7 +12,9 @@ import {
   isOrphanOriginalHeading,
   MAX_CONTINUATION_PAGINATION_PASSES,
   normalizeContinuationHeadingText,
+  pageRequiresContinuation,
   parseNumericHeading,
+  validateContinuationPageTop,
 } from "./continuation-format";
 
 /* global describe, test, expect */
@@ -292,6 +294,98 @@ describe("post-CONT'D pagination validation", () => {
   test("uses a bounded two-pass workflow and cannot loop indefinitely", () => {
     expect(MAX_CONTINUATION_PAGINATION_PASSES).toBe(2);
     expect(continuationPlacement(false, false)).toBe("before-complete-paragraph");
+  });
+});
+
+describe("page-based continuation rule", () => {
+  test("requires CONT'D for clean and split continuation-page starts alike", () => {
+    const pageState = {
+      activeNoteStartedEarlier: true,
+      pageBeginsWithOriginalHeading: false,
+    };
+
+    expect(pageRequiresContinuation(pageState)).toBe(true);
+    expect(pageRequiresContinuation(pageState)).toBe(true);
+  });
+
+  test("requires CONT'D on every later page of an active note", () => {
+    expect(
+      [6, 7, 8].every(() =>
+        pageRequiresContinuation({
+          activeNoteStartedEarlier: true,
+          pageBeginsWithOriginalHeading: false,
+        })
+      )
+    ).toBe(true);
+  });
+
+  test("suppresses CONT'D when the rendered page begins with a new original heading", () => {
+    expect(
+      pageRequiresContinuation({
+        activeNoteStartedEarlier: true,
+        pageBeginsWithOriginalHeading: true,
+      })
+    ).toBe(false);
+  });
+
+  test("repeated page-start insertion produces main then sub-note before body content", () => {
+    const pageStartInsertions = [
+      continuationText("5.3 Financial Instruments"),
+      continuationText("5. SIGNIFICANT ACCOUNTING POLICIES", true),
+    ];
+    const renderedOrder = [...pageStartInsertions].reverse().concat("continued body text");
+
+    expect(renderedOrder).toEqual([
+      "5. SIGNIFICANT ACCOUNTING POLICIES (CONT'D)",
+      "5.3 Financial Instruments (Cont'd)",
+      "continued body text",
+    ]);
+  });
+
+  test("page-start heading insertion leaves following table content unchanged", () => {
+    const table =
+      "<w:tbl><w:tr><w:tc><w:p><w:r><w:t>Continued table row</w:t></w:r></w:p></w:tc></w:tr></w:tbl>";
+    const renderedPage = `${continuationText("5.3 Financial Instruments")}${table}`;
+
+    expect(renderedPage.endsWith(table)).toBe(true);
+    expect(table).toBe(
+      "<w:tbl><w:tr><w:tc><w:p><w:r><w:t>Continued table row</w:t></w:r></w:p></w:tc></w:tr></w:tbl>"
+    );
+  });
+
+  test("rejects matching CONT'D text when it appears after page-top body content", () => {
+    expect(
+      validateContinuationPageTop({
+        anchorParagraphIndex: 20,
+        requiredHeadingTexts: [
+          "5. SIGNIFICANT ACCOUNTING POLICIES (CONT'D)",
+          "5.3 Financial Instruments (Cont'd)",
+        ],
+        existingHeadings: [{ documentIndex: 24, text: "5.3 Financial Instruments (Cont'd)" }],
+      })
+    ).toEqual({ validPrefixTexts: [], misplacedParagraphIndex: 24 });
+  });
+
+  test("accepts only the ordered main/sub-note prefix immediately before body content", () => {
+    expect(
+      validateContinuationPageTop({
+        anchorParagraphIndex: 22,
+        requiredHeadingTexts: [
+          "5. SIGNIFICANT ACCOUNTING POLICIES (CONT'D)",
+          "5.3 Financial Instruments (Cont'd)",
+        ],
+        existingHeadings: [
+          { documentIndex: 20, text: "5. SIGNIFICANT ACCOUNTING POLICIES (CONT'D)" },
+          { documentIndex: 21, text: "5.3 Financial Instruments (Cont'd)" },
+        ],
+      })
+    ).toEqual({
+      validPrefixTexts: [
+        "5. significant accounting policies (cont'd)",
+        "5.3 financial instruments (cont'd)",
+      ],
+      misplacedParagraphIndex: null,
+    });
   });
 });
 

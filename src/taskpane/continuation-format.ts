@@ -3,7 +3,11 @@ const MAIN_CONTINUATION_SUFFIX = " (CONT'D)";
 const NUMERIC_HEADING_PATTERN = /^(?:(\d+)\.\s+\S.*|(\d+\.\d+)\s+\S.*)$/;
 
 const normalizeHeadingWhitespace = (text: string): string =>
-  text.normalize("NFKC").replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
+  text
+    .normalize("NFKC")
+    .replace(/\u00a0/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 
 export const CONTINUATION_SUFFIX_PATTERN = /\s+\(Cont['’]d\)\s*$/i;
 
@@ -43,6 +47,41 @@ export function continuationPlacement(
 }
 
 export type ContinuationPageEligibility = "prepare" | "insert" | "skip";
+
+export function pageRequiresContinuation(options: {
+  activeNoteStartedEarlier: boolean;
+  pageBeginsWithOriginalHeading: boolean;
+}): boolean {
+  return options.activeNoteStartedEarlier && !options.pageBeginsWithOriginalHeading;
+}
+
+export function validateContinuationPageTop(options: {
+  anchorParagraphIndex: number;
+  requiredHeadingTexts: string[];
+  existingHeadings: Array<{ documentIndex: number; text: string }>;
+}): { validPrefixTexts: string[]; misplacedParagraphIndex: number | null } {
+  const required = options.requiredHeadingTexts.map(normalizeContinuationHeadingText);
+  const existing = options.existingHeadings
+    .map((heading) => ({
+      ...heading,
+      normalizedText: normalizeContinuationHeadingText(heading.text),
+    }))
+    .filter((heading) => required.includes(heading.normalizedText))
+    .sort((left, right) => left.documentIndex - right.documentIndex);
+  const validPrefixTexts: string[] = [];
+
+  for (const heading of existing) {
+    if (
+      heading.documentIndex < options.anchorParagraphIndex &&
+      heading.normalizedText === required[validPrefixTexts.length]
+    ) {
+      validPrefixTexts.push(heading.normalizedText);
+    } else {
+      return { validPrefixTexts, misplacedParagraphIndex: heading.documentIndex };
+    }
+  }
+  return { validPrefixTexts, misplacedParagraphIndex: null };
+}
 
 export function continuationPageEligibility(options: {
   sectionStartPage: number;

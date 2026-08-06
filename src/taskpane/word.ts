@@ -18,15 +18,17 @@ import {
 } from "./paragraph-format";
 import {
   continuationText,
-  continuationPageEligibility,
   continuationPlacement,
   CONTINUATION_SUFFIX_PATTERN,
   isOrphanOriginalHeading,
   normalizeContinuationHeadingText,
+  pageRequiresContinuation,
   parseNumericHeading,
   startsWithNumericHeading,
+  validateContinuationPageTop,
 } from "./continuation-format";
 import { runContdInsertionUntilStable } from "./contd-stabilization";
+import { locateNotesSection } from "./repeat-notes-header";
 
 export { continuationText, parseNumericHeading } from "./continuation-format";
 
@@ -101,11 +103,11 @@ interface ParagraphDetails {
   startPage: number | null;
   heading: HeadingDetails | null;
   isInsertedContinuation: boolean;
+  isInTable: boolean;
 }
 
 interface ContinuationPage {
   pageIndex: number;
-  pageStartRange: Word.Range;
   anchorIndex: number;
   anchorText: string;
   anchor: Word.Paragraph;
@@ -113,6 +115,7 @@ interface ContinuationPage {
   headings: HeadingDetails[];
   existingTexts: Set<string>;
   startsInsideParagraph: boolean;
+  misplacedHeading: Word.Paragraph | null;
 }
 
 const CONTINUATION_TAG_PREFIX = "word-continuation-heading:";
@@ -419,6 +422,7 @@ async function assessContinuationMarkersPass(
       paragraphPages.load("items/index");
       paragraph.font.load("name,size,bold,italic,color");
       paragraph.listItemOrNullObject.load("isNullObject,listString,level");
+      paragraph.parentTableOrNullObject.load("isNullObject");
       return paragraphPages;
     });
     const paragraphStartPageCollections = paragraphs.items.map((paragraph) => {
@@ -428,7 +432,7 @@ async function assessContinuationMarkersPass(
     });
     await context.sync();
 
-    const paragraphDetails: ParagraphDetails[] = paragraphs.items
+    const allParagraphDetails: ParagraphDetails[] = paragraphs.items
       .map((paragraph, index) => {
         const text = paragraph.text.trim();
         const listItem = paragraph.listItemOrNullObject;
@@ -453,9 +457,33 @@ async function assessContinuationMarkersPass(
               }
             : null,
           isInsertedContinuation: CONTINUATION_SUFFIX_PATTERN.test(text),
+          isInTable: !paragraph.parentTableOrNullObject.isNullObject,
         };
       })
       .filter((details) => details.text !== "");
+
+    const notesSection = locateNotesSection(
+      paragraphs.items.map((paragraph, index) => {
+        const listItem = paragraph.listItemOrNullObject;
+        return {
+          text: paragraph.text,
+          listPrefix: listItem.isNullObject ? "" : listItem.listString,
+          pages: paragraphPageCollections[index].items.map((page) => page.index),
+          startPage: paragraphStartPageCollections[index].items[0]?.index ?? null,
+        };
+      })
+    );
+    if (!notesSection) {
+      throw new Error(
+        "Could not reliably locate the Notes to the Financial Statements section. No CONT'D headings were added."
+      );
+    }
+
+    const paragraphDetails = allParagraphDetails.filter(
+      (details) =>
+        details.documentIndex >= notesSection.titleIndex &&
+        details.documentIndex < notesSection.endIndex
+    );
 
     const originalParagraphs = paragraphDetails.filter(
       (details) => !details.isInsertedContinuation
@@ -520,9 +548,6 @@ async function assessContinuationMarkersPass(
       }
     }
 
-    const unresolvedOrphanContent = new Set(
-      orphanHeadingPairs.map(({ content }) => content.paragraph)
-    );
     const activeHierarchy: Array<HeadingDetails | undefined> = [];
     const hierarchyBeforeParagraph = new Map<Word.Paragraph, HeadingDetails[]>();
 
@@ -536,7 +561,6 @@ async function assessContinuationMarkersPass(
 
     const originalParagraphsByPage = new Map<number, ParagraphDetails[]>();
     const firstOriginalParagraphStartingOnPage = new Map<number, ParagraphDetails>();
-    const existingTextsByPage = new Map<number, Set<string>>();
 
     for (const details of originalParagraphs) {
       if (
@@ -556,20 +580,11 @@ async function assessContinuationMarkersPass(
       }
     }
 
-    for (const details of paragraphDetails) {
-      const normalizedText = normalizeContinuationHeadingText(details.text);
-      for (const pageIndex of details.pages) {
-        const existingTexts = existingTextsByPage.get(pageIndex);
-        if (existingTexts) {
-          existingTexts.add(normalizedText);
-        } else {
-          existingTextsByPage.set(pageIndex, new Set([normalizedText]));
-        }
-      }
-    }
-
     const continuationPages: ContinuationPage[] = [];
-    for (const page of pages.items.slice(1)) {
+    const unsafeContinuationPages: number[] = [];
+    for (const pageIndex of notesSection.pages.slice(1)) {
+      const page = pages.items.find((candidate) => candidate.index === pageIndex);
+      if (!page) continue;
       const paragraphsOnPage = originalParagraphsByPage.get(page.index) ?? [];
       const paragraphSpanningIntoPage = paragraphsOnPage.find(
         (details) => details.startPage !== null && details.startPage < page.index
@@ -577,18 +592,17 @@ async function assessContinuationMarkersPass(
       const firstStartingOnPage = firstOriginalParagraphStartingOnPage.get(page.index);
       const firstOnPage = paragraphSpanningIntoPage ?? firstStartingOnPage;
       if (!firstOnPage) continue;
-      if (unresolvedOrphanContent.has(firstOnPage.paragraph)) {
+      if (firstOnPage.isInTable) {
+        unsafeContinuationPages.push(page.index);
         logContdDiagnostic({
           pass: diagnosticPass,
           phase: "candidate",
-          totalParagraphs: paragraphs.items.length,
-          candidateSection:
-            hierarchyBeforeParagraph.get(firstOnPage.paragraph)?.slice(-1)[0]?.key ?? null,
           candidatePage: page.index,
           candidateParagraphIndex: firstOnPage.documentIndex,
           insertionTargetText: firstOnPage.text,
           paginationChanged: false,
-          reason: "Skipped CONT'D because this is the first content of an orphan original heading.",
+          reason:
+            "The first Notes content is inside a table; the page was left unchanged instead of modifying the table.",
         });
         continue;
       }
@@ -598,19 +612,57 @@ async function assessContinuationMarkersPass(
         (heading) => heading.startPage !== null && heading.startPage < page.index
       );
       if (hierarchy.length === 0) continue;
-      const activeHeading = hierarchy[hierarchy.length - 1];
-      const eligibility = continuationPageEligibility({
-        sectionStartPage: activeHeading.startPage ?? page.index,
-        currentPage: page.index,
-        anchorStartPage: firstOnPage.startPage,
-        anchorIsOriginalHeading: firstOnPage.heading !== null,
-        anchorSpansFromEarlierPage: startedEarlier,
+      if (
+        !pageRequiresContinuation({
+          activeNoteStartedEarlier: hierarchy.length > 0,
+          pageBeginsWithOriginalHeading: !startedEarlier && firstOnPage.heading !== null,
+        })
+      ) {
+        continue;
+      }
+      if (startedEarlier && !prepareAffectedParagraphs) {
+        unsafeContinuationPages.push(page.index);
+        logContdDiagnostic({
+          pass: diagnosticPass,
+          phase: "candidate",
+          candidatePage: page.index,
+          candidateParagraphIndex: firstOnPage.documentIndex,
+          insertionTargetText: firstOnPage.text,
+          paginationChanged: false,
+          reason:
+            "The first Notes content still spans from the previous page after safe preparation; the page was skipped instead of inserting inside the paragraph.",
+        });
+        continue;
+      }
+
+      const requiredHeadingTexts = hierarchy.map((heading) =>
+        normalizeContinuationHeadingText(continuationText(heading.text, heading.level === 1))
+      );
+      const existingRequiredHeadings = paragraphDetails
+        .filter(
+          (details) =>
+            details.isInsertedContinuation &&
+            details.pages.includes(page.index) &&
+            requiredHeadingTexts.includes(normalizeContinuationHeadingText(details.text))
+        )
+        .sort((left, right) => left.documentIndex - right.documentIndex);
+      const pageTopValidation = validateContinuationPageTop({
+        anchorParagraphIndex: firstOnPage.documentIndex,
+        requiredHeadingTexts,
+        existingHeadings: existingRequiredHeadings.map((details) => ({
+          documentIndex: details.documentIndex,
+          text: details.text,
+        })),
       });
-      if (eligibility === "skip") continue;
+      const misplacedHeadingDetails =
+        pageTopValidation.misplacedParagraphIndex === null
+          ? null
+          : (existingRequiredHeadings.find(
+              (details) => details.documentIndex === pageTopValidation.misplacedParagraphIndex
+            ) ?? null);
 
       continuationPages.push({
         pageIndex: page.index,
-        pageStartRange: page.getRange(Word.RangeLocation.start),
         anchorIndex: firstOnPage.documentIndex,
         anchorText: firstOnPage.text,
         anchor: firstOnPage.paragraph,
@@ -619,14 +671,43 @@ async function assessContinuationMarkersPass(
         // adds one missing heading per stabilization pass so Word can
         // repaginate between additions while preserving their order.
         headings: hierarchy,
-        existingTexts: new Set(existingTextsByPage.get(page.index) ?? []),
-        startsInsideParagraph: eligibility === "prepare",
+        existingTexts: new Set(pageTopValidation.validPrefixTexts),
+        startsInsideParagraph: startedEarlier,
+        misplacedHeading: misplacedHeadingDetails?.paragraph ?? null,
       });
     }
 
     const continuingSectionKeys = new Set<string>();
     let headingsInserted = 0;
     let duplicatesSkipped = 0;
+
+    const pageWithMisplacedHeading = continuationPages.find(
+      (continuationPage) => continuationPage.misplacedHeading !== null
+    );
+    if (pageWithMisplacedHeading?.misplacedHeading) {
+      pageWithMisplacedHeading.misplacedHeading.delete();
+      await context.sync();
+      logContdDiagnostic({
+        pass: diagnosticPass,
+        phase: "page-top-validation",
+        candidatePage: pageWithMisplacedHeading.pageIndex,
+        candidateParagraphIndex: pageWithMisplacedHeading.anchorIndex,
+        insertionTargetText: pageWithMisplacedHeading.anchorText,
+        paginationChanged: true,
+        reason:
+          "Removed a CONT'D heading that existed outside the valid page-top main/sub-note prefix.",
+      });
+      return {
+        continuingSectionsFound: 0,
+        continuationPagesFound: continuationPages.length,
+        headingsInserted: 0,
+        duplicatesSkipped: 0,
+        limitationMessage:
+          "Removed one misplaced CONT'D heading and repaginated for a fresh page-top scan.",
+        paginationChanged: true,
+        requiresRepaginationPass: false,
+      };
+    }
 
     if (prepareAffectedParagraphs && insertContinuationHeadings) {
       const firstCandidate = continuationPages[0];
@@ -709,11 +790,7 @@ async function assessContinuationMarkersPass(
         if (!insertContinuationHeadings) continue;
 
         const placement = continuationPlacement(continuationPage.startsInsideParagraph, false);
-        const insertAtRenderedPageStart =
-          heading.level === 1 || placement === "at-rendered-page-start";
-        const inserted = insertAtRenderedPageStart
-          ? continuationPage.pageStartRange.insertParagraph(text, Word.InsertLocation.before)
-          : continuationPage.anchor.insertParagraph(text, Word.InsertLocation.before);
+        const inserted = continuationPage.anchor.insertParagraph(text, Word.InsertLocation.before);
         inserted.style = heading.paragraph.style;
         inserted.alignment = heading.paragraph.alignment;
         inserted.firstLineIndent = heading.paragraph.firstLineIndent;
@@ -742,10 +819,7 @@ async function assessContinuationMarkersPass(
           candidateParagraphIndex: continuationPage.anchorIndex,
           insertionTargetText: continuationPage.anchorText,
           paginationChanged: false,
-          reason:
-            placement === "at-rendered-page-start"
-              ? "Paragraph still spans pages; inserting at the freshly loaded rendered page start."
-              : "Inserting before the first complete paragraph on the continuation page.",
+          reason: `Inserting at the freshly loaded rendered page start (${placement}).`,
         });
         break;
       }
@@ -808,7 +882,13 @@ async function assessContinuationMarkersPass(
       continuationPagesFound: continuationPages.length,
       headingsInserted,
       duplicatesSkipped,
-      limitationMessage: `Word repaginated after insertion. Affected body paragraphs use Keep lines together, and continuation headings use Keep with next so a heading is followed by the complete paragraph whenever that paragraph can fit on one page. ${paragraphsStillSplitAfterValidation} affected paragraph(s) remain longer than or unable to fit on one page.`,
+      limitationMessage: `Word repaginated after insertion. Affected body paragraphs use Keep lines together, and continuation headings use Keep with next so a heading is followed by the complete paragraph whenever that paragraph can fit on one page. ${paragraphsStillSplitAfterValidation} affected paragraph(s) remain longer than or unable to fit on one page.${
+        unsafeContinuationPages.length > 0
+          ? ` Rendered page(s) ${unsafeContinuationPages
+              .map((pageIndex) => pageIndex + 1)
+              .join(", ")} had no safe page-top insertion point and were left unchanged.`
+          : ""
+      }`,
       requiresRepaginationPass: false,
     };
   });
